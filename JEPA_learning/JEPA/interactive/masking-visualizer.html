@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Multi-block masking visualizer — JEPA from Scratch</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  #stage{background:#fff;border:1px solid var(--line);border-radius:7px;padding:12px}
+  #hist{margin-top:6px}
+  .samples{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+  .samples canvas{width:100%;border:1px solid var(--line)}
+  .samples figcaption{font-size:10.5px;color:var(--grey);text-align:center;margin-top:3px;font-family:var(--mono)}
+  .samples figure{margin:0}
+</style></head><body>
+<div class="wrap">
+<header class="top">
+  <div class="crumb"><a href="index.html">← all four</a> · Chapter 8</div>
+  <div class="kicker">Interactive 1 of 4</div>
+  <h1>Multi-block masking</h1>
+  <p>A 38.7-point spread on ImageNet-1% between the best and worst masking strategy in the
+  paper's own ablation. Drag the parameters and watch what the two encoders actually receive.</p>
+</header>
+
+<div class="grid g2">
+<div>
+  <div class="card">
+    <h2>Parameters</h2>
+    <div class="ctl"><label>patch grid <b id="vG">14 × 14</b></label>
+      <input type="range" id="G" min="4" max="24" step="1" value="14">
+      <div class="hint">224/16 = 14 for ViT-B/16. Our CIFAR preset uses 8.</div></div>
+
+    <div class="ctl"><label>target blocks <i>M</i> <b id="vM">4</b></label>
+      <input type="range" id="M" min="1" max="12" step="1" value="4">
+      <div class="hint">Paper: M = 1 → 9.0%, M = 4 → 54.2%.</div></div>
+
+    <div class="ctl"><label>target area scale <b id="vTS">0.15 – 0.20</b></label>
+      <input type="range" id="ts0" min="0.02" max="0.60" step="0.005" value="0.15">
+      <input type="range" id="ts1" min="0.02" max="0.60" step="0.005" value="0.20"></div>
+
+    <div class="ctl"><label>target aspect ratio <b id="vTA">0.75 – 1.50</b></label>
+      <input type="range" id="ta0" min="0.2" max="3" step="0.05" value="0.75">
+      <input type="range" id="ta1" min="0.2" max="3" step="0.05" value="1.50"></div>
+
+    <div class="ctl"><label>context area scale <b id="vCS">0.85 – 1.00</b></label>
+      <input type="range" id="cs0" min="0.1" max="1" step="0.01" value="0.85">
+      <input type="range" id="cs1" min="0.1" max="1" step="0.01" value="1.00"></div>
+
+    <div class="ctl"><label>batch size (for truncation) <b id="vB">32</b></label>
+      <input type="range" id="B" min="1" max="512" step="1" value="32">
+      <div class="hint">Masks are truncated to the batch minimum, so this changes the
+      <i>effective</i> context. See the trap below.</div></div>
+
+    <div class="ctl"><label>min_keep <b id="vMK">4</b></label>
+      <input type="range" id="MK" min="0" max="30" step="1" value="4"></div>
+
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="resample">Resample</button>
+      <button id="coupled">scale ⟂ ratio</button>
+      <button id="overlap">no overlap</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Presets from Table 6</h2>
+    <div class="row pills">
+      <button data-p="multi">multi-block · 54.2</button>
+      <button data-p="block">block · 20.2</button>
+      <button data-p="random">random · 17.6</button>
+      <button data-p="raster">rasterised · 15.5</button>
+    </div>
+    <p class="note" style="margin:9px 0 0">ViT-B/16, 300 epochs, linear probe on 1% of
+    ImageNet labels. Assran et al., I-JEPA, ICCV 2023, Table 6.</p>
+  </div>
+</div>
+
+<div>
+  <div id="stage">
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
+      <div><canvas id="cv" width="460" height="460"></canvas>
+        <div class="legend">
+          <span><i style="background:#2980b9"></i>context (encoded by f<sub>θ</sub>)</span>
+          <span><i style="background:#c0392b"></i><i style="background:#e67e22"></i><i style="background:#8e44ad"></i>target blocks</span>
+          <span><i style="background:#e3e3e0"></i>discarded (overlap)</span>
+        </div></div>
+      <div>
+        <h2 style="font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--grey);margin:0 0 9px">Measured</h2>
+        <div class="stat"><span>patches <i>N</i></span><span id="sN">196</span></div>
+        <div class="stat"><span>this image: |ctx|</span><span id="sCtx">–</span></div>
+        <div class="stat"><span>this image: |ctx| / N</span><span id="sCtxR">–</span></div>
+        <div class="stat"><span>target block size</span><span id="sTB">–</span></div>
+        <div class="stat"><span>union of targets / N</span><span id="sUn">–</span></div>
+        <div class="stat"><span>overlap removed</span><span id="sOv">–</span></div>
+        <hr style="border:0;border-top:1px solid var(--line);margin:10px 0">
+        <div class="stat"><span>mean |ctx|/N over 600 draws</span><span id="sMean">–</span></div>
+        <div class="stat"><span><b>batch-min</b> n_ctx (B = <span id="sBb">32</span>)</span><span id="sMin">–</span></div>
+        <div class="stat"><span><b>effective</b> ratio after truncation</span><span id="sEff">–</span></div>
+        <div class="stat"><span>batch-min n_tgt</span><span id="sMinT">–</span></div>
+        <canvas id="hist" width="330" height="105"></canvas>
+        <div class="note" style="text-align:center">distribution of |ctx|/N, 600 draws</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--grey);margin:16px 0 0">Four more draws, same parameters</h3>
+    <div class="samples" id="samples"></div>
+  </div>
+
+  <div class="box k"><b class="tag">What to notice</b>
+  The paper reports an average context ratio of <b>0.25</b> at a 14×14 grid. Per image this
+  sampler gives <b>0.41</b> — read the histogram. The gap is the batch-minimum truncation. Set
+  G = 14 and slide the batch to <b>128</b>, the paper's per-GPU batch size, and the
+  "effective ratio" line lands at about <b>0.26</b>. So the paper's 0.25 is not a property of
+  the mask sampler; it is a property of the sampler <i>plus</i> the batching, and it therefore
+  depends on a hyperparameter nobody reports alongside it.</div>
+
+  <div class="box t"><b class="tag">Trap</b>
+  Push the grid down to 8 and the batch up to 256, as you would for CIFAR-10. The effective
+  ratio falls to about 0.17 — well under the paper's 0.25 — because with only 64 patches
+  one unlucky image drags the whole batch down. On a coarse grid you have to raise
+  <code>context_scale</code> or lower the batch size, and you should know which one you changed.</div>
+
+  <div class="box a"><b class="tag">Try to break it</b>
+  Find a setting where the context is <i>empty</i> for some images. Then look at what
+  <code>min_keep</code> does about it: the real sampler retries up to 20 times per constraint
+  level, then starts dropping constraints — it will let the context overlap a target rather
+  than return nothing. Set min_keep high and watch how often that has to happen.</div>
+</div>
+</div>
+
+<footer class="bot">
+Sources: Assran, Duval, Misra, Bojanowski, Vincent, Rabbat, LeCun, Ballas,
+<i>Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture</i>,
+ICCV 2023 — <a href="https://arxiv.org/abs/2301.08243">arxiv.org/abs/2301.08243</a>
+(§3, Fig. 4, Tables 6, 8, 9, 10; Appendix A.1). Reference implementation
+<a href="https://github.com/facebookresearch/ijepa">facebookresearch/ijepa</a>,
+<code>src/masks/multiblock.py</code>. Truncation measurements are my own, reproducible with
+<code>exp/test_masks_numpy.py</code>.
+</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const COLS = ['#c0392b','#e67e22','#8e44ad','#16a085','#c2185b','#0277bd','#f9a825','#5d4037',
+              '#00838f','#7b1fa2','#33691e','#ad1457'];
+let coupled = false, noOverlap = true, seed = 1;
+
+// deterministic PRNG so "resample" is reproducible and the histogram is stable
+function rng(s){ let x = s|0 || 1; return () => { x ^= x<<13; x ^= x>>>17; x ^= x<<5; return ((x>>>0)/4294967296); }; }
+
+function cfg(){
+  const g = +$('G').value;
+  let ts=[+$('ts0').value,+$('ts1').value], ta=[+$('ta0').value,+$('ta1').value],
+      cs=[+$('cs0').value,+$('cs1').value];
+  if(ts[0]>ts[1]) ts=[ts[1],ts[0]];
+  if(ta[0]>ta[1]) ta=[ta[1],ta[0]];
+  if(cs[0]>cs[1]) cs=[cs[1],cs[0]];
+  return {g, M:+$('M').value, ts, ta, cs, B:+$('B').value, mk:+$('MK').value};
+}
+
+function blockSize(c, scale, ar, r){
+  const rs = r(), ra = coupled ? rs : r();
+  const area = Math.floor(c.g*c.g*(scale[0]+rs*(scale[1]-scale[0])));
+  const a = ar[0]+ra*(ar[1]-ar[0]);
+  let h = Math.round(Math.sqrt(area*a)), w = Math.round(Math.sqrt(area/a));
+  // upstream enforces h < grid strictly (`while h >= height: h -= 1`)
+  return [Math.max(1,Math.min(h,c.g-1)), Math.max(1,Math.min(w,c.g-1))];
+}
+function place(c,[h,w],r){
+  const top = Math.floor(r()*(c.g-h+1)), left = Math.floor(r()*(c.g-w+1));
+  const m = new Uint8Array(c.g*c.g);
+  for(let i=top;i<top+h;i++) for(let j=left;j<left+w;j++) m[i*c.g+j]=1;
+  return m;
+}
+// one image, given block shapes already fixed for the batch
+function sampleImage(c, thw, chw, r){
+  let tg, occ, ctxBlock, ctx;
+  for(let tries=0; tries<80; tries++){
+    tg=[]; occ=new Uint8Array(c.g*c.g);
+    for(let k=0;k<c.M;k++){ const m=place(c,thw,r); tg.push(m); for(let i=0;i<m.length;i++) occ[i]|=m[i]; }
+    ctxBlock = place(c,chw,r);
+    ctx = new Uint8Array(c.g*c.g);
+    for(let i=0;i<ctx.length;i++) ctx[i] = ctxBlock[i] && (!noOverlap || !occ[i]) ? 1 : 0;
+    let n=0; for(const v of ctx) n+=v;
+    if(n > c.mk) return {tg, occ, ctxBlock, ctx, nctx:n, tries};
+  }
+  let n=0; for(const v of ctx) n+=v;
+  return {tg, occ, ctxBlock, ctx, nctx:n, tries:80};
+}
+
+function draw(cv, c, s, big){
+  const ctx2 = cv.getContext('2d'), P = cv.width/c.g;
+  ctx2.clearRect(0,0,cv.width,cv.height);
+  for(let i=0;i<c.g;i++) for(let j=0;j<c.g;j++){
+    const k=i*c.g+j;
+    let col = '#f0f0ee';
+    if(s.ctxBlock[k] && !s.ctx[k]) col = '#dcdcd8';       // removed by overlap
+    if(s.ctx[k]) col = '#2980b9';
+    ctx2.fillStyle = col;
+    ctx2.fillRect(j*P+0.5, i*P+0.5, P-1, P-1);
+  }
+  s.tg.forEach((m,idx)=>{
+    ctx2.fillStyle = COLS[idx%COLS.length];
+    ctx2.globalAlpha = 0.92;
+    for(let i=0;i<c.g;i++) for(let j=0;j<c.g;j++) if(m[i*c.g+j])
+      ctx2.fillRect(j*P+0.5, i*P+0.5, P-1, P-1);
+    ctx2.globalAlpha = 1;
+  });
+  if(big){
+    ctx2.strokeStyle='#1a1a1a'; ctx2.lineWidth=1; ctx2.globalAlpha=.28;
+    for(let i=0;i<=c.g;i++){
+      ctx2.beginPath(); ctx2.moveTo(i*P,0); ctx2.lineTo(i*P,cv.height); ctx2.stroke();
+      ctx2.beginPath(); ctx2.moveTo(0,i*P); ctx2.lineTo(cv.width,i*P); ctx2.stroke();
+    }
+    ctx2.globalAlpha=1;
+  }
+}
+
+function drawHist(vals){
+  const cv=$('hist'), x=cv.getContext('2d'), W=cv.width, H=cv.height, NB=28;
+  x.clearRect(0,0,W,H);
+  const bins=new Array(NB).fill(0);
+  vals.forEach(v=>bins[Math.min(NB-1,Math.floor(v*NB))]++);
+  const mx=Math.max(1,...bins);
+  x.fillStyle='#2980b9';
+  bins.forEach((b,i)=>{ const h=(b/mx)*(H-20); x.fillRect(i*(W/NB)+1, H-16-h, W/NB-2, h); });
+  x.strokeStyle='#e3e3e0'; x.beginPath(); x.moveTo(0,H-16); x.lineTo(W,H-16); x.stroke();
+  x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+  [0,.25,.5,.75,1].forEach(t=>{ x.fillText(t.toFixed(2), Math.min(W-24,t*W), H-4); });
+  // mark 0.25, the paper's figure
+  x.strokeStyle='#b03a2e'; x.setLineDash([3,2]); x.beginPath();
+  x.moveTo(.25*W, 0); x.lineTo(.25*W, H-16); x.stroke(); x.setLineDash([]);
+}
+
+function update(){
+  const c = cfg();
+  $('vG').textContent = c.g+' × '+c.g;
+  $('vM').textContent = c.M;
+  $('vTS').textContent = c.ts[0].toFixed(3)+' – '+c.ts[1].toFixed(3);
+  $('vTA').textContent = c.ta[0].toFixed(2)+' – '+c.ta[1].toFixed(2);
+  $('vCS').textContent = c.cs[0].toFixed(2)+' – '+c.cs[1].toFixed(2);
+  $('vB').textContent = c.B; $('sBb').textContent = c.B; $('vMK').textContent = c.mk;
+  $('sN').textContent = c.g*c.g;
+  $('coupled').textContent = coupled ? 'scale ∥ ratio (upstream)' : 'scale ⟂ ratio';
+  $('coupled').className = coupled ? 'on' : '';
+  $('overlap').textContent = noOverlap ? 'no overlap' : 'overlap allowed';
+  $('overlap').className = noOverlap ? 'on' : '';
+
+  // main view: one batch, shapes fixed
+  const r = rng(seed*7919);
+  const thw = blockSize(c,c.ts,c.ta,r), chw = blockSize(c,c.cs,[1,1],r);
+  const imgs = [];
+  for(let b=0;b<Math.max(5,Math.min(c.B,512));b++) imgs.push(sampleImage(c,thw,chw,r));
+  const s = imgs[0];
+  draw($('cv'), c, s, c.g<=20);
+
+  let un=0; for(const v of s.occ) un+=v;
+  let cb=0; for(const v of s.ctxBlock) cb+=v;
+  $('sCtx').textContent = s.nctx+' / '+(c.g*c.g);
+  $('sCtxR').textContent = (s.nctx/(c.g*c.g)).toFixed(3);
+  $('sTB').textContent = thw[0]+'×'+thw[1]+' = '+(thw[0]*thw[1])+' patches';
+  $('sUn').textContent = (un/(c.g*c.g)).toFixed(3);
+  $('sOv').textContent = (cb - s.nctx)+' patches';
+
+  // batch statistics over the sampled batch
+  const nb = Math.min(c.B, imgs.length);
+  let minCtx = Infinity, minTgt = Infinity;
+  for(let b=0;b<nb;b++){
+    minCtx = Math.min(minCtx, imgs[b].nctx);
+    let mt = Infinity;
+    imgs[b].tg.forEach(m=>{ let n=0; for(const v of m) n+=v; mt=Math.min(mt,n); });
+    minTgt = Math.min(minTgt, mt);
+  }
+  $('sMin').textContent = minCtx+' patches';
+  $('sEff').textContent = (minCtx/(c.g*c.g)).toFixed(3);
+  $('sMinT').textContent = minTgt+' patches';
+
+  // 600 independent draws for the per-image distribution
+  const r2 = rng(seed*104729+13), vals=[];
+  for(let k=0;k<600;k++){
+    const t2 = blockSize(c,c.ts,c.ta,r2), c2 = blockSize(c,c.cs,[1,1],r2);
+    vals.push(sampleImage(c,t2,c2,r2).nctx/(c.g*c.g));
+  }
+  $('sMean').textContent = (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(3);
+  drawHist(vals);
+
+  // four extra draws
+  const holder = $('samples'); holder.innerHTML='';
+  for(let k=1;k<=4;k++){
+    const rr = rng(seed*31337+k*7);
+    const t3 = blockSize(c,c.ts,c.ta,rr), c3 = blockSize(c,c.cs,[1,1],rr);
+    const ss = sampleImage(c,t3,c3,rr);
+    const fig=document.createElement('figure');
+    const cc=document.createElement('canvas'); cc.width=cc.height=180;
+    draw(cc,c,ss,false);
+    const cap=document.createElement('figcaption');
+    cap.textContent = 'ctx '+ss.nctx+'/'+(c.g*c.g)+' = '+(ss.nctx/(c.g*c.g)*100).toFixed(0)+'%';
+    fig.appendChild(cc); fig.appendChild(cap); holder.appendChild(fig);
+  }
+}
+
+const PRESETS = {
+  multi:  {G:14,M:4,ts:[0.15,0.20],ta:[0.75,1.50],cs:[0.85,1.00]},
+  block:  {G:14,M:1,ts:[0.60,0.60],ta:[1.0,1.0],  cs:[1.00,1.00]},
+  random: {G:14,M:12,ts:[0.05,0.05],ta:[1.0,1.0], cs:[1.00,1.00]},
+  raster: {G:14,M:3,ts:[0.25,0.25],ta:[1.0,1.0],  cs:[1.00,1.00]}
+};
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{
+  const p=PRESETS[b.dataset.p];
+  $('G').value=p.G; $('M').value=p.M;
+  $('ts0').value=p.ts[0]; $('ts1').value=p.ts[1];
+  $('ta0').value=p.ta[0]; $('ta1').value=p.ta[1];
+  $('cs0').value=p.cs[0]; $('cs1').value=p.cs[1];
+  noOverlap = true; seed++; update();
+});
+['G','M','ts0','ts1','ta0','ta1','cs0','cs1','B','MK'].forEach(id=>$(id).oninput=update);
+$('resample').onclick = ()=>{ seed++; update(); };
+$('coupled').onclick  = ()=>{ coupled = !coupled; update(); };
+$('overlap').onclick  = ()=>{ noOverlap = !noOverlap; update(); };
+update();
+</script>
+</body></html>

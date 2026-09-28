@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ViT explorer — JEPA from Scratch</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  .panel{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:860px){.panel{grid-template-columns:1fr}}
+  .cvcard{background:#fff;border:1px solid var(--line);border-radius:7px;padding:10px}
+  .cvcard h3{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--grey);
+    margin:0 0 7px;font-weight:600}
+  #draw{cursor:crosshair;touch-action:none}
+  #grid{cursor:pointer}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0}
+  .steps li{counter-increment:s;position:relative;padding-left:26px;margin-bottom:9px;font-size:12.5px;color:var(--grey)}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:0;width:18px;height:18px;
+    border-radius:50%;background:var(--accent-lt);color:var(--accent);font-size:10.5px;
+    font-weight:700;display:flex;align-items:center;justify-content:center}
+  .steps li b{color:var(--ink)}
+</style></head><body>
+<div class="wrap">
+<header class="top">
+  <div class="crumb"><a href="index.html">← all four</a> · Chapters 3 and 9</div>
+  <div class="kicker">Interactive 3 of 4</div>
+  <h1>Inside the encoder</h1>
+  <p>Draw something, then walk through every operation between your drawing and the vectors the
+  predictor receives. Patch embedding, the fixed sin-cos position table, attention, and what
+  masking actually removes.</p>
+</header>
+
+<div class="grid g2">
+<div>
+  <div class="card">
+    <h2>Input</h2>
+    <canvas id="draw" width="256" height="256" style="border:1px solid var(--line);width:100%"></canvas>
+    <div class="row" style="margin-top:9px">
+      <button class="primary" id="clear">Clear</button>
+      <button data-shape="face">face</button>
+      <button data-shape="cross">cross</button>
+      <button data-shape="ring">ring</button>
+      <button data-shape="noise">noise</button>
+    </div>
+    <p class="note" style="margin:8px 0 0">Draw with the mouse or a finger. Every panel updates
+    live.</p>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Controls</h2>
+    <div class="ctl"><label>patch size <b id="vP">32 px → 8×8 grid</b></label>
+      <input type="range" id="P" min="2" max="6" step="1" value="4">
+      <div class="hint">Powers of two from 8 to 128 px. ViT-B/16 on 224 px input gives a
+      14×14 grid; our CIFAR preset gives 8×8.</div></div>
+    <div class="ctl"><label>embedding dim <i>D</i> <b id="vD">64</b></label>
+      <input type="range" id="D" min="8" max="128" step="8" value="64"></div>
+    <div class="ctl"><label>attention: content vs position <b id="vMix">50 / 50</b></label>
+      <input type="range" id="mix" min="0" max="1" step="0.02" value="0.5">
+      <div class="hint">Mix the query/key projections between patch content and the positional
+      embedding. At 0 the head attends purely on position; at 1 purely on content.</div></div>
+    <div class="ctl"><label>attention head <b id="vHd">1</b></label>
+      <input type="range" id="hd" min="1" max="6" step="1" value="1"></div>
+    <div class="ctl"><label>show masking <b id="vMask">off</b></label>
+      <input type="range" id="mk" min="0" max="1" step="1" value="0"></div>
+    <div class="row"><button id="reroll">New random weights</button></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>The pipeline</h2>
+    <ol class="steps">
+      <li><b>Patchify.</b> One strided convolution, kernel = stride = <i>P</i>. Equivalent to
+      flattening each patch and applying one shared linear map.</li>
+      <li><b>Add position.</b> A <i>fixed</i>, non-learned 2-D sin-cos table.
+      <code>requires_grad=False</code>. Half the channels encode the row, half the column.</li>
+      <li><b>Mask.</b> Simply drop the tokens you do not want. Attention is set-valued, so this
+      costs nothing — and it is why the I-JEPA context encoder is cheap.</li>
+      <li><b>Attend.</b> Full bidirectional self-attention. No causal mask anywhere in I-JEPA,
+      unlike your LLM intuition.</li>
+      <li><b>Pool.</b> No <code>[CLS]</code> token: average the patch tokens.</li>
+    </ol>
+  </div>
+</div>
+
+<div>
+  <div class="panel">
+    <div class="cvcard"><h3>1 · patch grid — click a patch</h3>
+      <canvas id="grid" width="380" height="380" style="width:100%"></canvas>
+      <p class="note" id="selInfo">selected: patch 27 → row 3, col 3</p></div>
+
+    <div class="cvcard"><h3>2 · the selected patch, as a vector</h3>
+      <canvas id="patch" width="380" height="130" style="width:100%"></canvas>
+      <p class="note">Top: the raw <i>P</i>×<i>P</i> pixels. Bottom: the same pixels flattened
+      row-major — this is what the linear patch embedding consumes.</p></div>
+
+    <div class="cvcard"><h3>3 · its positional embedding</h3>
+      <canvas id="pos" width="380" height="90" style="width:100%"></canvas>
+      <p class="note">Blue half encodes the <b>row</b>, green half the <b>column</b>. Within
+      each half: <code>[sin(pos·ω) | cos(pos·ω)]</code> with
+      <code>ω<sub>k</sub> = 10000<sup>−2k/(D/2)</sup></code>.</p></div>
+
+    <div class="cvcard"><h3>4 · positional similarity to every patch</h3>
+      <canvas id="possim" width="380" height="380" style="width:100%"></canvas>
+      <p class="note">Cosine similarity between the selected patch's position code and every
+      other. The bright cross is the point: sin-cos positions are separable in row and column,
+      so a token knows <i>where</i> it is before it knows anything about content.</p></div>
+
+    <div class="cvcard"><h3>5 · attention from the selected patch</h3>
+      <canvas id="attn" width="380" height="380" style="width:100%"></canvas>
+      <p class="note">One randomly-initialised head, <code>softmax(QKᵀ/√d)</code>, row of the
+      selected query. Randomly-initialised — no training — so this shows the
+      <i>inductive bias</i>, not learned structure.</p></div>
+
+    <div class="cvcard"><h3>6 · what the encoders receive</h3>
+      <canvas id="mask" width="380" height="380" style="width:100%"></canvas>
+      <p class="note" id="maskInfo">Turn on “show masking”. Lit patches go to
+      <i>f<sub>θ</sub></i>; boxed patches are the target blocks whose <i>representations</i>
+      the predictor must produce.</p></div>
+  </div>
+
+  <div class="box k"><b class="tag">The experiment worth running</b>
+  Drag the content/position slider to 0 and look at panel 5. A randomly-initialised head
+  attending purely on position produces the same cross pattern as panel 4 — that structure is
+  free, it comes from the sin-cos table, and no training was needed for it. Now drag to 1:
+  attention becomes content-driven and much noisier. Almost all of what a <i>trained</i> ViT
+  learns is how to blend those two.</div>
+
+  <div class="box t"><b class="tag">Trap</b>
+  The order of operations in step 2 matters and is easy to get backwards. I-JEPA adds the
+  positional embedding <b>before</b> masking, so a surviving context token still knows its
+  absolute location in the full image. Add it after and every context token thinks it is at
+  position 0..n_ctx, which destroys the whole task. Turn on masking and note that the boxes in
+  panel 6 stay where they are in the original image, not where they are in the token sequence.</div>
+
+  <div class="box g"><b class="tag">Try this</b>
+  Set the patch size to its smallest value, 8 px. The grid becomes 32×32 = 1024 tokens and the
+  attention matrix has over a million entries — this is why ViTs use 14 or 16 pixel patches, and why V-JEPA's tubelets
+  span two frames rather than one. Then set it to 128 px: four tokens, and the model can no
+  longer represent anything spatial at all.</div>
+</div>
+</div>
+
+<footer class="bot">
+Sources: Dosovitskiy et al., <i>An Image is Worth 16x16 Words</i>, ICLR 2021 —
+<a href="https://arxiv.org/abs/2010.11929">arxiv.org/abs/2010.11929</a> ·
+Vaswani et al., <i>Attention Is All You Need</i>, NeurIPS 2017 —
+<a href="https://arxiv.org/abs/1706.03762">arxiv.org/abs/1706.03762</a> ·
+sin-cos construction and the <code>requires_grad=False</code> position table follow
+<a href="https://github.com/facebookresearch/ijepa">facebookresearch/ijepa</a>,
+<code>src/models/vision_transformer.py</code> (the paper does not state which kind of
+positional embedding is used).
+</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const IMG=256;
+let img=new Float64Array(IMG*IMG), sel=0, Wq=null,Wk=null, seed=1;
+
+/* ---------- drawing ---------- */
+const dc=$('draw').getContext('2d');
+function repaint(){
+  const d=dc.createImageData(IMG,IMG);
+  for(let i=0;i<IMG*IMG;i++){ const v=Math.round(255*Math.max(0,Math.min(1,img[i])));
+    d.data[i*4]=d.data[i*4+1]=d.data[i*4+2]=v; d.data[i*4+3]=255; }
+  dc.putImageData(d,0,0); update();
+}
+function stamp(x,y,r,v){
+  for(let i=Math.max(0,y-r);i<Math.min(IMG,y+r);i++)
+    for(let j=Math.max(0,x-r);j<Math.min(IMG,x+r);j++){
+      const dd=Math.hypot(i-y,j-x); if(dd<r) img[i*IMG+j]=Math.max(img[i*IMG+j], v*(1-dd/r*0.6)); }
+}
+let drawing=false;
+function pos(e){ const r=$('draw').getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return [Math.floor((t.clientX-r.left)*(IMG/r.width)), Math.floor((t.clientY-r.top)*(IMG/r.height))]; }
+['mousedown','touchstart'].forEach(ev=>$('draw').addEventListener(ev,e=>{
+  e.preventDefault(); drawing=true; const [x,y]=pos(e); stamp(x,y,12,1); repaint(); }));
+['mousemove','touchmove'].forEach(ev=>$('draw').addEventListener(ev,e=>{
+  if(!drawing) return; e.preventDefault(); const [x,y]=pos(e); stamp(x,y,12,1); repaint(); }));
+['mouseup','mouseleave','touchend'].forEach(ev=>window.addEventListener(ev,()=>drawing=false));
+
+function shape(k){
+  img.fill(0.06);
+  for(let i=0;i<img.length;i++) img[i]+=0.04*Math.random();
+  const put=(x,y,r,v)=>stamp(Math.round(x),Math.round(y),r,v);
+  if(k==='face'){
+    for(let a=0;a<360;a+=2) put(128+92*Math.cos(a*Math.PI/180),128+92*Math.sin(a*Math.PI/180),7,.95);
+    put(96,104,14,1); put(160,104,14,1);
+    for(let a=200;a<340;a+=3) put(128+56*Math.cos(a*Math.PI/180),150+40*Math.sin(a*Math.PI/180),7,.9);
+  } else if(k==='cross'){
+    for(let t=30;t<226;t+=2){ put(t,128,15,.95); put(128,t,15,.95); }
+  } else if(k==='ring'){
+    for(let a=0;a<360;a+=2){ put(128+80*Math.cos(a*Math.PI/180),128+80*Math.sin(a*Math.PI/180),16,.95); }
+  } else {
+    for(let i=0;i<img.length;i++) img[i]=Math.random();
+  }
+  repaint();
+}
+$('clear').onclick=()=>{ img.fill(0.07); for(let i=0;i<img.length;i++) img[i]+=0.03*Math.random(); repaint(); };
+document.querySelectorAll('[data-shape]').forEach(b=>b.onclick=()=>shape(b.dataset.shape));
+
+/* ---------- sin-cos ---------- */
+function sincos(D,Gs){
+  const half=D/2, out=[];
+  const one=(d,p)=>{ const v=new Float64Array(d);
+    for(let k=0;k<d/2;k++){ const w=1/Math.pow(10000, (2*k)/d);
+      v[k]=Math.sin(p*w); v[k+d/2]=Math.cos(p*w); } return v; };
+  for(let r=0;r<Gs;r++) for(let c=0;c<Gs;c++){
+    const a=one(half,r), b=one(half,c), v=new Float64Array(D);
+    v.set(a,0); v.set(b,half); out.push(v);
+  }
+  return out;
+}
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function cos(a,b){ let d=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
+  return d/(Math.sqrt(na*nb)+1e-12); }
+
+/* ---------- state ---------- */
+function conf(){
+  const P=Math.pow(2,+$('P').value+1);         // 4 .. 128
+  return {P, G:Math.max(2,Math.floor(IMG/P)), D:+$('D').value,
+          mix:+$('mix').value, hd:+$('hd').value, mask:+$('mk').value===1};
+}
+function patchVec(c,k){
+  const r=Math.floor(k/c.G), cc=k%c.G, v=new Float64Array(c.P*c.P);
+  for(let a=0;a<c.P;a++) for(let b=0;b<c.P;b++) v[a*c.P+b]=img[(r*c.P+a)*IMG+(cc*c.P+b)];
+  return v;
+}
+function heat(x,cv,vals,G,sel,label){
+  const P=cv.width/G;
+  let mn=Infinity,mx=-Infinity; vals.forEach(v=>{mn=Math.min(mn,v);mx=Math.max(mx,v);});
+  const rg=(mx-mn)||1;
+  for(let i=0;i<G;i++) for(let j=0;j<G;j++){
+    const t=(vals[i*G+j]-mn)/rg;
+    // inferno-ish
+    const r=Math.round(255*Math.min(1,Math.max(0,1.6*t-0.15)));
+    const g=Math.round(255*Math.min(1,Math.max(0,2.0*t-0.85)));
+    const b=Math.round(255*Math.min(1,Math.max(0, t<0.5? 0.9*t+0.15 : 1.9-3.2*t )));
+    x.fillStyle=`rgb(${r},${g},${b})`;
+    x.fillRect(j*P,i*P,Math.ceil(P),Math.ceil(P));
+  }
+  if(sel!==undefined&&G<=32){ const r=Math.floor(sel/G),c2=sel%G;
+    x.strokeStyle='#00e5ff'; x.lineWidth=2; x.strokeRect(c2*P+1,r*P+1,P-2,P-2); }
+  if(label){ x.fillStyle='rgba(0,0,0,.55)'; x.fillRect(0,cv.height-16,cv.width,16);
+    x.fillStyle='#fff'; x.font='10px ui-monospace,monospace'; x.fillText(label,5,cv.height-5); }
+}
+
+function update(){
+  const c=conf();
+  $('vP').textContent=c.P+' px → '+c.G+'×'+c.G+' grid';
+  $('vD').textContent=c.D;
+  $('vMix').textContent=Math.round((1-c.mix)*100)+' / '+Math.round(c.mix*100);
+  $('vHd').textContent=c.hd; $('vMask').textContent=c.mask?'on':'off';
+  if(sel>=c.G*c.G) sel=Math.floor(c.G*c.G/2)+Math.floor(c.G/2);
+  const N=c.G*c.G;
+
+  /* --- 1. grid --- */
+  { const cv=$('grid'), x=cv.getContext('2d'), S=cv.width/c.G;
+    const d=x.createImageData(cv.width,cv.height);
+    for(let i=0;i<cv.height;i++) for(let j=0;j<cv.width;j++){
+      const v=Math.round(255*Math.max(0,Math.min(1,img[Math.floor(i*IMG/cv.height)*IMG+Math.floor(j*IMG/cv.width)])));
+      const o=(i*cv.width+j)*4; d.data[o]=d.data[o+1]=d.data[o+2]=v; d.data[o+3]=255; }
+    x.putImageData(d,0,0);
+    if(c.G<=32){ x.strokeStyle='rgba(31,92,153,.55)'; x.lineWidth=1;
+      for(let i=0;i<=c.G;i++){ x.beginPath();x.moveTo(i*S,0);x.lineTo(i*S,cv.height);x.stroke();
+        x.beginPath();x.moveTo(0,i*S);x.lineTo(cv.width,i*S);x.stroke(); } }
+    const r=Math.floor(sel/c.G), cc=sel%c.G;
+    x.strokeStyle='#00b0d8'; x.lineWidth=3; x.strokeRect(cc*S+1.5,r*S+1.5,S-3,S-3);
+    x.fillStyle='rgba(0,0,0,.6)'; x.fillRect(0,cv.height-17,cv.width,17);
+    x.fillStyle='#fff'; x.font='11px ui-monospace,monospace';
+    x.fillText(`N = ${N} tokens · attention matrix ${N}×${N} = ${(N*N).toLocaleString()} entries`,5,cv.height-5);
+    $('selInfo').textContent=`selected: patch ${sel} → row ${r}, col ${cc}  (index = row·G + col)`;
+  }
+
+  /* --- 2. patch as vector --- */
+  { const cv=$('patch'), x=cv.getContext('2d'); x.clearRect(0,0,cv.width,cv.height);
+    const v=patchVec(c,sel), n=c.P;
+    const box=Math.min(58, 58), cell=box/n;
+    for(let i=0;i<n;i++) for(let j=0;j<n;j++){
+      const g=Math.round(255*Math.max(0,Math.min(1,v[i*n+j])));
+      x.fillStyle=`rgb(${g},${g},${g})`; x.fillRect(6+j*cell,6+i*cell,Math.ceil(cell),Math.ceil(cell)); }
+    x.strokeStyle='#c8c8c4'; x.strokeRect(6,6,box,box);
+    x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+    x.fillText(`${n}×${n} px`,6,box+18);
+    x.fillText(`flattened: ${v.length}-vector`,76,18);
+    const L=76, W=cv.width-L-8, bw=Math.max(0.7, W/v.length);
+    for(let i=0;i<v.length;i++){
+      const h=Math.max(1, 82*Math.max(0,Math.min(1,v[i])));
+      x.fillStyle='#1f5c99'; x.fillRect(L+i*bw, cv.height-14-h, Math.max(0.7,bw-0.3), h); }
+    x.strokeStyle='#e3e3e0'; x.beginPath(); x.moveTo(L,cv.height-14); x.lineTo(cv.width-8,cv.height-14); x.stroke();
+  }
+
+  /* --- 3 & 4. positional embedding --- */
+  const PE=sincos(c.D,c.G);
+  { const cv=$('pos'), x=cv.getContext('2d'); x.clearRect(0,0,cv.width,cv.height);
+    const v=PE[sel], bw=(cv.width-16)/c.D, mid=cv.height/2;
+    for(let i=0;i<c.D;i++){
+      x.fillStyle = i<c.D/2 ? '#1f5c99' : '#1e7a4c';
+      const h=(cv.height/2-14)*v[i];
+      x.fillRect(8+i*bw, mid-Math.max(h,0), Math.max(0.8,bw-0.4), Math.abs(h)||0.8); }
+    x.strokeStyle='#c8c8c4'; x.beginPath(); x.moveTo(8,mid); x.lineTo(cv.width-8,mid); x.stroke();
+    x.strokeStyle='#e3e3e0'; x.setLineDash([2,2]);
+    x.beginPath(); x.moveTo(8+c.D/2*bw,4); x.lineTo(8+c.D/2*bw,cv.height-4); x.stroke(); x.setLineDash([]);
+    x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+    x.fillText('row half',10,cv.height-3); x.fillText('column half',8+c.D/2*bw+4,cv.height-3);
+  }
+  { const cv=$('possim'), x=cv.getContext('2d');
+    const vals=new Array(N); for(let k=0;k<N;k++) vals[k]=cos(PE[sel],PE[k]);
+    heat(x,cv,vals,c.G,sel,'cosine similarity of position codes');
+  }
+
+  /* --- 5. attention --- */
+  { const cv=$('attn'), x=cv.getContext('2d');
+    const dh=16, PDIM=c.P*c.P;
+    // regenerate weights when needed
+    if(!Wq || Wq.pdim!==PDIM || Wq.D!==c.D || Wq.head!==c.hd || Wq.seed!==seed){
+      let s=seed*9301+c.hd*49297;
+      const rnd=()=>{ s=(s*1103515245+12345)&0x7fffffff; return (s/0x7fffffff)*2-1; };
+      const mk=(r)=>{const a=new Float64Array(r*dh); for(let i=0;i<a.length;i++) a[i]=rnd()*Math.sqrt(1/r); return a;};
+      Wq={pdim:PDIM,D:c.D,head:c.hd,seed,
+          qc:mk(PDIM), kc:mk(PDIM), qp:mk(c.D), kp:mk(c.D)};
+    }
+    const proj=(v,W,r)=>{const o=new Float64Array(dh);
+      for(let j=0;j<dh;j++){let t=0; for(let i=0;i<r;i++) t+=v[i]*W[i*dh+j]; o[j]=t;} return o;};
+    // build Q for the selected token and K for all
+    const contents=[]; for(let k=0;k<N;k++) contents.push(patchVec(c,k));
+    const q=(()=>{ const a=proj(contents[sel],Wq.qc,PDIM), b=proj(PE[sel],Wq.qp,c.D), o=new Float64Array(dh);
+      for(let j=0;j<dh;j++) o[j]=c.mix*a[j]+(1-c.mix)*b[j]; return o; })();
+    const logits=new Array(N);
+    for(let k=0;k<N;k++){ const a=proj(contents[k],Wq.kc,PDIM), b=proj(PE[k],Wq.kp,c.D);
+      let t=0; for(let j=0;j<dh;j++) t+=q[j]*(c.mix*a[j]+(1-c.mix)*b[j]);
+      logits[k]=t/Math.sqrt(dh); }
+    const mx=Math.max(...logits); let Zs=0;
+    const att=logits.map(v=>{const e=Math.exp((v-mx)*2); Zs+=e; return e;});
+    for(let k=0;k<N;k++) att[k]/=Zs;
+    heat(x,cv,att,c.G,sel,'softmax attention from the selected query');
+  }
+
+  /* --- 6. masking --- */
+  { const cv=$('mask'), x=cv.getContext('2d'), S=cv.width/c.G;
+    let s=seed*7919; const rnd=()=>{ s=(s*1103515245+12345)&0x7fffffff; return s/0x7fffffff; };
+    const occ=new Uint8Array(N), blocks=[];
+    if(c.mask){
+      const th=Math.max(1,Math.round(Math.sqrt(0.175*N))), tw=th;
+      for(let b=0;b<4;b++){
+        const r0=Math.floor(rnd()*(c.G-th+1)), c0=Math.floor(rnd()*(c.G-tw+1)), m=[];
+        for(let i=r0;i<r0+th;i++) for(let j=c0;j<c0+tw;j++){ m.push(i*c.G+j); occ[i*c.G+j]=1; }
+        blocks.push({m,r0,c0,h:th,w:tw});
+      }
+    }
+    const d=x.createImageData(cv.width,cv.height);
+    for(let i=0;i<cv.height;i++) for(let j=0;j<cv.width;j++){
+      const gi=Math.floor(i/S), gj=Math.floor(j/S), k=gi*c.G+gj;
+      let v=img[Math.floor(i*IMG/cv.height)*IMG+Math.floor(j*IMG/cv.width)];
+      if(c.mask && occ[k]) v*=0.10;
+      const g=Math.round(255*Math.max(0,Math.min(1,v)));
+      const o=(i*cv.width+j)*4; d.data[o]=d.data[o+1]=d.data[o+2]=g; d.data[o+3]=255; }
+    x.putImageData(d,0,0);
+    const COLS=['#c0392b','#e67e22','#8e44ad','#16a085'];
+    blocks.forEach((b,i)=>{ x.strokeStyle=COLS[i]; x.lineWidth=2.5;
+      x.strokeRect(b.c0*S+1.5,b.r0*S+1.5,b.w*S-3,b.h*S-3); });
+    if(c.mask){
+      let nctx=0; for(let k=0;k<N;k++) if(!occ[k]) nctx++;
+      x.fillStyle='rgba(0,0,0,.6)'; x.fillRect(0,cv.height-17,cv.width,17);
+      x.fillStyle='#fff'; x.font='11px ui-monospace,monospace';
+      x.fillText(`context ${nctx}/${N} = ${(nctx/N*100).toFixed(0)}% · f_theta attends over ${nctx} tokens, not ${N}`,5,cv.height-5);
+      $('maskInfo').innerHTML='Dimmed patches belong to target blocks and are <b>deleted</b> from '+
+        'the context encoder\'s input — not zeroed, deleted. Attention is set-valued, so the cost '+
+        'drops quadratically.';
+    } else {
+      $('maskInfo').textContent='Turn on “show masking” to see what f_θ actually receives.';
+    }
+  }
+}
+
+$('grid').onclick=e=>{
+  const c=conf(), r=e.target.getBoundingClientRect(), cv=$('grid');
+  const x=(e.clientX-r.left)*(cv.width/r.width), y=(e.clientY-r.top)*(cv.height/r.height);
+  const S=cv.width/c.G;
+  sel=Math.min(c.G*c.G-1, Math.floor(y/S)*c.G+Math.floor(x/S));
+  update();
+};
+['P','D','mix','hd','mk'].forEach(id=>$(id).oninput=update);
+$('reroll').onclick=()=>{ seed++; Wq=null; update(); };
+shape('face');
+</script>
+</body></html>

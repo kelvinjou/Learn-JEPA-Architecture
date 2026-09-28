@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planning in latent space — JEPA from Scratch</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  #world{cursor:pointer;background:#fff;border:1px solid var(--line);border-radius:6px}
+  .plots{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  @media(max-width:820px){.plots{grid-template-columns:1fr}}
+  .plots canvas{width:100%;background:#fff;border:1px solid var(--line);border-radius:6px}
+  .keys{font-family:var(--mono);font-size:11px;color:var(--grey)}
+</style></head><body>
+<div class="wrap">
+<header class="top">
+  <div class="crumb"><a href="index.html">← all four</a> · Chapter 13</div>
+  <div class="kicker">Interactive 4 of 4</div>
+  <h1>Planning in latent space</h1>
+  <p>V-JEPA 2's planner, in miniature. A frozen encoder, an action-conditioned predictor learned
+  from random play, and the Cross-Entropy Method searching for the action sequence whose
+  <i>imagined</i> final embedding lands closest to the goal embedding. No reward function, no
+  value function, no policy network.</p>
+</header>
+
+<div class="grid g2b">
+<div>
+  <canvas id="world" width="620" height="480" style="width:100%"></canvas>
+  <p class="note">Click an empty cell to move the <b style="color:#1e7a4c">goal</b>.
+  Shift-click to move the <b style="color:#1f5c99">agent</b>. Alt-click to toggle a wall.</p>
+
+  <div class="plots">
+    <div><canvas id="pErr" width="500" height="220"></canvas>
+      <div class="note" style="text-align:center">(a) predictor rollout error vs horizon —
+      the error accumulation that breaks long-horizon planning</div></div>
+    <div><canvas id="pCost" width="500" height="220"></canvas>
+      <div class="note" style="text-align:center">(b) CEM: elite cost per refinement iteration,
+      for the current plan</div></div>
+  </div>
+
+  <div class="box k"><b class="tag">The whole method</b>
+  <span style="font-family:var(--serif);font-size:13.5px">
+  E(â<sub>1:T</sub>) = ‖ P(â<sub>1:T</sub>; z<sub>k</sub>) − z<sub>g</sub> ‖<sub>1</sub>,
+  &nbsp; a* = argmin<sub>â</sub> E(â<sub>1:T</sub>) </span><br>
+  Encode the goal image once. Roll candidate action sequences through the predictor
+  <i>in embedding space</i>. Score by ℓ₁ distance to the goal embedding. Execute only the first
+  action, observe, re-plan. That is receding-horizon control, and it is exactly Eq. 5 of the
+  V-JEPA 2 paper.</div>
+
+  <div class="box a"><b class="tag">Three things to try</b>
+  <b>1. Break greedy planning.</b> Set the horizon to 1. The default layout has a barrier the
+  agent must go <i>around</i>, so every single-step move that reduces the goal distance is
+  blocked and the agent oscillates in front of the wall forever. At T = 6 it solves the same
+  layout in under 20 steps. That gap is exactly why V-JEPA 2 needs intermediate sub-goal images
+  for pick-and-place: their planning horizon is 1.<br>
+  <b>2. Watch error accumulate.</b> Raise the predictor noise and watch plot (a). The one-step
+  error barely moves while the 6-step error roughly triples — errors compound through the
+  rollout, not along it. Short horizons stay usable; long ones stop meaning anything. The paper
+  names this failure: "the accuracy of the representation-space predictions decreases with
+  longer autoregressive rollouts."<br>
+  <b>3. Compare the honest baseline.</b> Turn on "plan with true dynamics". The planner now uses
+  the simulator instead of the learned predictor. Any gap between the two is entirely the
+  predictor's fault, and separating those two error sources is most of what debugging a world
+  model consists of.</div>
+
+  <div class="box t"><b class="tag">Trap</b>
+  The planner never sees the grid. It sees an 8-dimensional embedding produced by a
+  <i>frozen random</i> encoder and a random-feature ridge regression per action, learned from random play. When the
+  agent walks into a wall, the encoder returns the same embedding it had before — so as far as
+  the predictor is concerned, nothing happened. Watch the imagined path (dashed) diverge from
+  the executed path (solid) whenever a wall is involved.</div>
+</div>
+
+<div>
+  <div class="card">
+    <h2>Run</h2>
+    <div class="row"><button class="primary" id="go">Run agent</button>
+      <button id="stepBtn">Step</button><button id="resetBtn">Reset</button></div>
+    <div class="stat" style="margin-top:9px"><span>steps taken</span><span id="sSteps">0</span></div>
+    <div class="stat"><span>‖z − z<sub>goal</sub>‖₁ now</span><span id="sD">–</span></div>
+    <div class="stat"><span>best imagined cost</span><span id="sBest">–</span></div>
+    <div class="stat"><span>chosen first action</span><span id="sAct">–</span></div>
+    <div class="stat"><span>status</span><span id="sStat">idle</span></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Planner</h2>
+    <div class="ctl"><label>planning horizon <i>T</i> <b id="vT">6</b></label>
+      <input type="range" id="T" min="1" max="14" step="1" value="6"></div>
+    <div class="ctl"><label>CEM samples <b id="vNS">240</b></label>
+      <input type="range" id="NS" min="20" max="800" step="20" value="240"></div>
+    <div class="ctl"><label>CEM refinement iterations <b id="vNI">6</b></label>
+      <input type="range" id="NI" min="1" max="14" step="1" value="6"></div>
+    <div class="ctl"><label>elite fraction <b id="vEL">0.10</b></label>
+      <input type="range" id="EL" min="0.02" max="0.5" step="0.02" value="0.10"></div>
+    <div class="ctl"><label>cost norm <b id="vNorm">L1</b></label>
+      <input type="range" id="norm" min="0" max="1" step="1" value="0"></div>
+    <div class="ctl"><label>plan with true dynamics <b id="vTrue">off</b></label>
+      <input type="range" id="useTrue" min="0" max="1" step="1" value="0">
+      <div class="hint">Isolates predictor error from planner error.</div></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>World model</h2>
+    <div class="ctl"><label>predictor noise <b id="vNZ">0.00</b></label>
+      <input type="range" id="NZ" min="0" max="0.5" step="0.01" value="0"></div>
+    <div class="ctl"><label>random-play transitions <b id="vNT">3000</b></label>
+      <input type="range" id="NT" min="200" max="8000" step="200" value="3000">
+      <div class="hint">One ridge regression per action, from 72 random tanh features of z to
+      z′, fitted in closed form on this many random transitions. V-JEPA 2 uses under 62 hours
+      of unlabelled robot video for the same job.</div></div>
+    <div class="row"><button id="retrain">Refit predictor</button>
+      <button id="reroll">New encoder</button></div>
+    <div class="stat" style="margin-top:9px"><span>one-step latent error</span><span id="sE1">–</span></div>
+    <div class="stat"><span>6-step rollout error</span><span id="sE6">–</span></div>
+    <div class="note" style="margin-top:8px">Encoder: fixed random 2-layer MLP,
+      (x, y, sin/cos features) → ℝ<sup>8</sup>, never trained — exactly the "frozen encoder"
+      condition of V-JEPA 2-AC.</div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Legend</h2>
+    <div class="legend" style="flex-direction:column;gap:5px">
+      <span><i style="background:#1f5c99"></i>agent</span>
+      <span><i style="background:#1e7a4c"></i>goal</span>
+      <span><i style="background:#3a3a38"></i>wall</span>
+      <span><i style="background:#c0c0bc"></i>CEM candidate rollouts (true states)</span>
+      <span><i style="background:#b03a2e"></i>chosen plan, imagined</span>
+      <span><i style="background:#1f5c99"></i>executed path</span>
+    </div>
+  </div>
+</div>
+</div>
+
+<footer class="bot">
+Sources: Assran et al., <i>V-JEPA 2: Self-Supervised Video Models Enable Understanding,
+Prediction and Planning</i>, 2025 —
+<a href="https://arxiv.org/abs/2506.09985">arxiv.org/abs/2506.09985</a>
+(§3.2 and Eq. 5 for the goal-conditioned energy and receding-horizon CEM; Table 3 for the CEM
+settings: 800 samples, 10 refinement iterations, planning horizon 1, 16 s per action on one
+RTX 4090; §4.3 for the error-accumulation and camera-pose limitations) ·
+Rubinstein, <i>Optimization of computer simulation models with rare events</i>, 1997, for CEM.
+</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const GW=15, GH=11, CELL=40, D=8, NA=4;
+const ACT=[[0,-1],[0,1],[-1,0],[1,0]], ANAME=['up','down','left','right'];
+let walls, agent, goal, path=[], running=false, steps=0, seed=3;
+let Wenc=null, Benc=null, W2=null, B2=null, Amaps=null, lastPlan=null, errCurve=null, costCurve=null;
+
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+/* ---------------- world ---------------- */
+function initWorld(){
+  walls=Array.from({length:GH},()=>new Uint8Array(GW));
+  for(let y=0;y<GH;y++){ walls[y][0]=walls[y][GW-1]=1; }
+  for(let x=0;x<GW;x++){ walls[0][x]=walls[GH-1][x]=1; }
+  // a barrier that forces non-greedy planning
+  for(let y=2;y<=8;y++) walls[y][7]=1;
+  walls[5][7]=0;
+  agent={x:3,y:5}; goal={x:11,y:5}; path=[{...agent}]; steps=0;
+}
+function free(x,y){ return x>=0&&y>=0&&x<GW&&y<GH&&!walls[y][x]; }
+function trueStep(s,a){ const [dx,dy]=ACT[a];
+  const nx=s.x+dx, ny=s.y+dy; return free(nx,ny)?{x:nx,y:ny}:{...s}; }
+
+/* ---------------- frozen random encoder ---------------- */
+function feats(s){
+  const fx=s.x/(GW-1), fy=s.y/(GH-1);
+  return [fx,fy,
+    Math.sin(2*Math.PI*fx),Math.cos(2*Math.PI*fx),
+    Math.sin(2*Math.PI*fy),Math.cos(2*Math.PI*fy),
+    Math.sin(4*Math.PI*fx),Math.cos(4*Math.PI*fy),
+    fx*fy, 1];
+}
+const FD=10, HID=24;
+function buildEncoder(){
+  let s=seed*104729;
+  const r=()=>{ s=(s*1103515245+12345)&0x7fffffff; return (s/0x7fffffff)*2-1; };
+  Wenc=new Float64Array(FD*HID); for(let i=0;i<Wenc.length;i++) Wenc[i]=r()*Math.sqrt(2/FD);
+  Benc=new Float64Array(HID);   for(let i=0;i<HID;i++) Benc[i]=r()*0.1;
+  W2=new Float64Array(HID*D);   for(let i=0;i<W2.length;i++) W2[i]=r()*Math.sqrt(2/HID);
+  B2=new Float64Array(D);       for(let i=0;i<D;i++) B2[i]=r()*0.1;
+}
+function enc(s){
+  const f=feats(s), h=new Float64Array(HID);
+  for(let j=0;j<HID;j++){ let t=Benc[j]; for(let i=0;i<FD;i++) t+=f[i]*Wenc[i*HID+j];
+    h[j]=Math.tanh(t); }
+  const z=new Float64Array(D);
+  for(let j=0;j<D;j++){ let t=B2[j]; for(let i=0;i<HID;i++) t+=h[i]*W2[i*D+j]; z[j]=t; }
+  return z;
+}
+
+/* ---------------- learned action-conditioned predictor ---------------- */
+function solve(A,B,n,m,lam){
+  const a=A.slice(), b=B.slice();
+  for(let i=0;i<n;i++) a[i*n+i]+=lam;
+  for(let i=0;i<n;i++){
+    let mx=i; for(let k=i+1;k<n;k++) if(Math.abs(a[k*n+i])>Math.abs(a[mx*n+i])) mx=k;
+    if(mx!==i){ for(let j=0;j<n;j++){const t=a[i*n+j];a[i*n+j]=a[mx*n+j];a[mx*n+j]=t;}
+                for(let j=0;j<m;j++){const t=b[i*m+j];b[i*m+j]=b[mx*m+j];b[mx*m+j]=t;} }
+    const d=a[i*n+i]||1e-12;
+    for(let k=i+1;k<n;k++){ const f=a[k*n+i]/d; if(!f) continue;
+      for(let j=i;j<n;j++) a[k*n+j]-=f*a[i*n+j];
+      for(let j=0;j<m;j++) b[k*m+j]-=f*b[i*m+j]; }
+  }
+  const x=new Float64Array(n*m);
+  for(let i=n-1;i>=0;i--) for(let j=0;j<m;j++){
+    let t=b[i*m+j]; for(let k=i+1;k<n;k++) t-=a[i*n+k]*x[k*m+j];
+    x[i*m+j]=t/(a[i*n+i]||1e-12); }
+  return x;
+}
+/* The predictor is a ridge regression from RANDOM FEATURES of z to z', fitted
+   per action.  Random features rather than a raw linear map, because gridworld
+   dynamics seen through a nonlinear encoder are not linear in z -- a plain
+   linear map leaves a large one-step error and the planner then walks into
+   walls.  Closed form, so there is no training loop to tune. */
+const NF=72;                                  // random tanh features
+let Rf=null, bf=null;
+function buildFeatures(){
+  let s=seed*7907+11;
+  const r=()=>{ s=(s*1103515245+12345)&0x7fffffff; return (s/0x7fffffff)*2-1; };
+  Rf=new Float64Array(D*NF); for(let i=0;i<Rf.length;i++) Rf[i]=r()*1.4;
+  bf=new Float64Array(NF);   for(let i=0;i<NF;i++) bf[i]=r()*1.2;
+}
+const KD=D+NF+1;
+function phi(z){
+  const f=new Float64Array(KD);
+  for(let i=0;i<D;i++) f[i]=z[i];
+  for(let j=0;j<NF;j++){ let t=bf[j]; for(let i=0;i<D;i++) t+=z[i]*Rf[i*NF+j];
+    f[D+j]=Math.tanh(t); }
+  f[KD-1]=1;
+  return f;
+}
+function fitPredictor(){
+  if(!Rf) buildFeatures();
+  const NT=+$('NT').value;
+  Amaps=[];
+  for(let a=0;a<NA;a++){
+    const A=new Float64Array(KD*KD), B=new Float64Array(KD*D);
+    for(let t=0;t<NT;t++){
+      let s; do{ s={x:1+Math.floor(Math.random()*(GW-2)), y:1+Math.floor(Math.random()*(GH-2))}; }
+      while(!free(s.x,s.y));
+      const f=phi(enc(s)), zn=enc(trueStep(s,a));
+      for(let i=0;i<KD;i++){ const fi=f[i];
+        for(let j=i;j<KD;j++) A[i*KD+j]+=fi*f[j];
+        for(let j=0;j<D;j++) B[i*D+j]+=fi*zn[j]; }
+    }
+    for(let i=0;i<KD;i++) for(let j=0;j<i;j++) A[i*KD+j]=A[j*KD+i];   // symmetrise
+    Amaps.push({W:solve(A,B,KD,D,1e-2*NT/KD)});
+  }
+  measure();
+}
+function predict(z,a){
+  const M=Amaps[a], f=phi(z), o=new Float64Array(D), nz=+$('NZ').value;
+  for(let j=0;j<D;j++){ let t=0;
+    for(let i=0;i<KD;i++) t+=f[i]*M.W[i*D+j];
+    o[j]=t + (nz? nz*randn()*0.1 : 0); }
+  return o;
+}
+function dist(a,b,l2){
+  let s=0;
+  if(l2){ for(let i=0;i<a.length;i++) s+=(a[i]-b[i])*(a[i]-b[i]); return Math.sqrt(s); }
+  for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s;
+}
+function measure(){
+  // rollout error vs horizon, averaged over random start states and random action sequences
+  const H=14, acc=new Float64Array(H), cnt=new Float64Array(H);
+  for(let trial=0;trial<160;trial++){
+    let s; do{ s={x:1+Math.floor(Math.random()*(GW-2)), y:1+Math.floor(Math.random()*(GH-2))}; }
+    while(!free(s.x,s.y));
+    let z=enc(s), st=s;
+    for(let t=0;t<H;t++){
+      const a=Math.floor(Math.random()*NA);
+      z=predict(z,a); st=trueStep(st,a);
+      acc[t]+=dist(z,enc(st),false); cnt[t]++;
+    }
+  }
+  errCurve=Array.from(acc,(v,i)=>v/cnt[i]);
+  $('sE1').textContent=errCurve[0].toFixed(4);
+  $('sE6').textContent=errCurve[5].toFixed(4);
+}
+
+/* ---------------- CEM planner ---------------- */
+function plan(){
+  const T=+$('T').value, NS=+$('NS').value, NI=+$('NI').value, EL=+$('EL').value;
+  const l2=+$('norm').value===1, useTrue=+$('useTrue').value===1;
+  const zg=enc(goal), z0=enc(agent);
+  // categorical distribution over actions per timestep
+  let probs=Array.from({length:T},()=>new Float64Array(NA).fill(1/NA));
+  const nEl=Math.max(2,Math.round(NS*EL));
+  const hist=[]; let best=null, sampleTracks=[];
+  for(let it=0;it<NI;it++){
+    const cands=[];
+    for(let n=0;n<NS;n++){
+      const seq=[];
+      for(let t=0;t<T;t++){
+        let r=Math.random(), acc=0, a=NA-1;
+        for(let k=0;k<NA;k++){ acc+=probs[t][k]; if(r<=acc){ a=k; break; } }
+        seq.push(a);
+      }
+      let cost, states=[{...agent}];
+      if(useTrue){
+        let st={...agent};
+        for(const a of seq){ st=trueStep(st,a); states.push({...st}); }
+        cost=dist(enc(st),zg,l2);
+      } else {
+        let z=z0, st={...agent};
+        for(const a of seq){ z=predict(z,a); st=trueStep(st,a); states.push({...st}); }
+        cost=dist(z,zg,l2);
+      }
+      cands.push({seq,cost,states});
+    }
+    cands.sort((p,q)=>p.cost-q.cost);
+    const elites=cands.slice(0,nEl);
+    hist.push({mean:elites.reduce((s,e)=>s+e.cost,0)/nEl, min:elites[0].cost});
+    if(it===NI-1) sampleTracks=cands.slice(0,Math.min(24,cands.length)).map(c=>c.states);
+    // refit
+    probs=Array.from({length:T},(_,t)=>{
+      const p=new Float64Array(NA).fill(0.02);
+      elites.forEach(e=>p[e.seq[t]]+=1);
+      const s=p.reduce((a,b)=>a+b,0); return p.map(v=>v/s);
+    });
+    best=elites[0];
+  }
+  // the imagined path of the winning sequence, for display
+  let z=z0, st={...agent}; const imag=[{...agent}];
+  for(const a of best.seq){ z=predict(z,a); st=trueStep(st,a); imag.push({...st}); }
+  costCurve=hist;
+  lastPlan={seq:best.seq, cost:best.cost, imag, tracks:sampleTracks};
+  $('sBest').textContent=best.cost.toFixed(4);
+  $('sAct').textContent=ANAME[best.seq[0]];
+  $('sD').textContent=dist(enc(agent),zg,l2).toFixed(4);
+  return best.seq[0];
+}
+
+/* ---------------- drawing ---------------- */
+function draw(){
+  const cv=$('world'), x=cv.getContext('2d');
+  x.clearRect(0,0,cv.width,cv.height);
+  const ox=(cv.width-GW*CELL)/2, oy=(cv.height-GH*CELL)/2;
+  // cells
+  for(let y=0;y<GH;y++) for(let cx=0;cx<GW;cx++){
+    x.fillStyle = walls[y][cx] ? '#3a3a38' : '#f7f7f5';
+    x.fillRect(ox+cx*CELL, oy+y*CELL, CELL-1, CELL-1);
+  }
+  // candidate rollouts
+  if(lastPlan){
+    x.strokeStyle='rgba(140,140,136,.5)'; x.lineWidth=1.2;
+    lastPlan.tracks.forEach(tr=>{ x.beginPath();
+      tr.forEach((s,i)=>{ const px=ox+s.x*CELL+CELL/2+ (Math.random()-.5)*5,
+                                py=oy+s.y*CELL+CELL/2+ (Math.random()-.5)*5;
+        i?x.lineTo(px,py):x.moveTo(px,py); }); x.stroke(); });
+    // chosen plan
+    x.strokeStyle='#b03a2e'; x.lineWidth=2.6; x.setLineDash([6,4]); x.beginPath();
+    lastPlan.imag.forEach((s,i)=>{ const px=ox+s.x*CELL+CELL/2, py=oy+s.y*CELL+CELL/2;
+      i?x.lineTo(px,py):x.moveTo(px,py); }); x.stroke(); x.setLineDash([]);
+    lastPlan.imag.forEach((s,i)=>{ if(!i) return;
+      x.fillStyle='rgba(176,58,46,.85)';
+      x.beginPath(); x.arc(ox+s.x*CELL+CELL/2, oy+s.y*CELL+CELL/2, 3, 0, 7); x.fill(); });
+  }
+  // executed path
+  if(path.length>1){ x.strokeStyle='#1f5c99'; x.lineWidth=3; x.beginPath();
+    path.forEach((s,i)=>{ const px=ox+s.x*CELL+CELL/2, py=oy+s.y*CELL+CELL/2;
+      i?x.lineTo(px,py):x.moveTo(px,py); }); x.stroke(); }
+  // goal & agent
+  x.fillStyle='#1e7a4c';
+  x.fillRect(ox+goal.x*CELL+7, oy+goal.y*CELL+7, CELL-15, CELL-15);
+  x.fillStyle='#fff'; x.font='bold 11px -apple-system,sans-serif';
+  x.fillText('G', ox+goal.x*CELL+CELL/2-4, oy+goal.y*CELL+CELL/2+4);
+  x.fillStyle='#1f5c99'; x.beginPath();
+  x.arc(ox+agent.x*CELL+CELL/2, oy+agent.y*CELL+CELL/2, CELL/2-8, 0, 7); x.fill();
+  drawPlots();
+}
+function plotAxes(cv,ymax,ylab){
+  const x=cv.getContext('2d'), W=cv.width, H=cv.height, L=46,R=10,T=12,B=26;
+  x.clearRect(0,0,W,H); x.strokeStyle='#eeeeec';
+  x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+  for(let k=0;k<=4;k++){ const v=ymax*k/4, y=H-B-(k/4)*(H-T-B);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(W-R,y); x.stroke();
+    x.fillText(v.toFixed(2),3,y+3); }
+  x.strokeStyle='#c8c8c4'; x.beginPath(); x.moveTo(L,T); x.lineTo(L,H-B); x.lineTo(W-R,H-B); x.stroke();
+  x.fillText(ylab, W-R-90, H-8);
+  return {x,W,H,L,R,T,B,ty:v=>H-B-Math.max(0,Math.min(1,v/ymax))*(H-T-B),
+          tx:(i,n)=>L+(i/Math.max(1,n-1))*(W-L-R)};
+}
+function drawPlots(){
+  if(errCurve){
+    const T=+$('T').value;
+    const zg=enc(goal), gd=dist(enc(agent),zg,+$('norm').value===1);
+    const ymax=Math.max(...errCurve, gd)*1.15||1;
+    const a=plotAxes($('pErr'),ymax,'horizon');
+    // goal distance reference
+    a.x.strokeStyle='#1e7a4c'; a.x.setLineDash([4,3]); a.x.beginPath();
+    a.x.moveTo(a.L,a.ty(gd)); a.x.lineTo(a.W-a.R,a.ty(gd)); a.x.stroke(); a.x.setLineDash([]);
+    a.x.fillStyle='#1e7a4c'; a.x.fillText('current ‖z − z_goal‖', a.L+5, a.ty(gd)-4);
+    a.x.strokeStyle='#b03a2e'; a.x.lineWidth=2; a.x.beginPath();
+    errCurve.forEach((v,i)=>{ const px=a.tx(i,errCurve.length), py=a.ty(v);
+      i?a.x.lineTo(px,py):a.x.moveTo(px,py); }); a.x.stroke();
+    // marker at chosen horizon
+    const px=a.tx(T-1,errCurve.length);
+    a.x.strokeStyle='#1f5c99'; a.x.setLineDash([2,2]); a.x.beginPath();
+    a.x.moveTo(px,a.T); a.x.lineTo(px,a.H-a.B); a.x.stroke(); a.x.setLineDash([]);
+    a.x.fillStyle='#1f5c99'; a.x.fillText('T='+T, px+3, a.T+10);
+  }
+  if(costCurve && costCurve.length){
+    const ymax=Math.max(...costCurve.map(c=>c.mean))*1.15||1;
+    const a=plotAxes($('pCost'),ymax,'CEM iteration');
+    ['mean','min'].forEach((k,ki)=>{
+      a.x.strokeStyle=ki? '#1e7a4c':'#1f5c99'; a.x.lineWidth=2; a.x.beginPath();
+      costCurve.forEach((c,i)=>{ const px=a.tx(i,costCurve.length), py=a.ty(c[k]);
+        i?a.x.lineTo(px,py):a.x.moveTo(px,py); }); a.x.stroke(); });
+    a.x.fillStyle='#1f5c99'; a.x.fillText('elite mean', a.L+6, a.T+11);
+    a.x.fillStyle='#1e7a4c'; a.x.fillText('elite best', a.L+6, a.T+23);
+  }
+}
+
+/* ---------------- interaction ---------------- */
+$('world').onclick=e=>{
+  const cv=$('world'), r=cv.getBoundingClientRect();
+  const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
+  const ox=(cv.width-GW*CELL)/2, oy=(cv.height-GH*CELL)/2;
+  const cx=Math.floor((px-ox)/CELL), cy=Math.floor((py-oy)/CELL);
+  if(cx<1||cy<1||cx>=GW-1||cy>=GH-1) return;
+  if(e.altKey){ walls[cy][cx]^=1; if(!free(agent.x,agent.y)||!free(goal.x,goal.y)) walls[cy][cx]^=1;
+                fitPredictor(); }
+  else if(e.shiftKey){ if(free(cx,cy)){ agent={x:cx,y:cy}; path=[{...agent}]; steps=0; } }
+  else { if(free(cx,cy)) goal={x:cx,y:cy}; }
+  lastPlan=null; plan(); $('sSteps').textContent=steps; draw();
+};
+function doStep(){
+  const a=plan();
+  const before={...agent};
+  agent=trueStep(agent,a); path.push({...agent}); steps++;
+  $('sSteps').textContent=steps;
+  if(agent.x===goal.x&&agent.y===goal.y){
+    $('sStat').innerHTML='<span class="verdict v-ok">reached the goal in '+steps+' steps</span>';
+    running=false; $('go').textContent='Run agent'; $('go').className='primary';
+  } else if(before.x===agent.x&&before.y===agent.y){
+    $('sStat').innerHTML='<span class="verdict v-warn">plan produced no movement — stuck</span>';
+  } else if(steps>150){
+    $('sStat').innerHTML='<span class="verdict v-bad">gave up after 150 steps</span>';
+    running=false; $('go').textContent='Run agent'; $('go').className='primary';
+  } else {
+    $('sStat').innerHTML='<span class="verdict v-warn">planning…</span>';
+  }
+  draw();
+}
+$('stepBtn').onclick=doStep;
+$('go').onclick=()=>{ running=!running; $('go').textContent=running?'Pause':'Run agent';
+  $('go').className=running?'':'primary';
+  (function tick(){ if(!running) return; doStep(); setTimeout(tick, 220); })(); };
+$('resetBtn').onclick=()=>{ running=false; $('go').textContent='Run agent'; $('go').className='primary';
+  initWorld(); buildEncoder(); buildFeatures(); fitPredictor(); lastPlan=null; plan();
+  $('sSteps').textContent=0; $('sStat').textContent='idle'; draw(); };
+$('retrain').onclick=()=>{ fitPredictor(); lastPlan=null; plan(); draw(); };
+$('reroll').onclick=()=>{ seed++; buildEncoder(); Rf=null; fitPredictor(); lastPlan=null; plan(); draw(); };
+['T','NS','NI','EL','norm','useTrue','NZ'].forEach(id=>$(id).oninput=()=>{
+  $('vT').textContent=$('T').value; $('vNS').textContent=$('NS').value;
+  $('vNI').textContent=$('NI').value; $('vEL').textContent=(+$('EL').value).toFixed(2);
+  $('vNorm').textContent=+$('norm').value===1?'L2':'L1';
+  $('vTrue').textContent=+$('useTrue').value===1?'on':'off';
+  $('vNZ').textContent=(+$('NZ').value).toFixed(2);
+  if(id==='NZ') measure();
+  lastPlan=null; plan(); draw();
+});
+$('NT').oninput=()=>{ $('vNT').textContent=$('NT').value; };
+$('NT').onchange=()=>{ fitPredictor(); lastPlan=null; plan(); draw(); };
+
+initWorld(); buildEncoder(); buildFeatures(); fitPredictor(); plan(); draw();
+</script>
+</body></html>

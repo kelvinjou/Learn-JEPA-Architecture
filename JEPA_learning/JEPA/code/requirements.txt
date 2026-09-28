@@ -1,0 +1,8 @@
+# Tested against torch 2.2+.  CUDA (RTX 3060) and Apple MPS (M-series) both work.
+#
+# NVIDIA:   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# Apple:    pip install torch torchvision            # MPS ships in the default wheel
+torch>=2.1
+torchvision>=0.16
+numpy>=1.24
+matplotlib>=3.7

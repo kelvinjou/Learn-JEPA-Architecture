@@ -1,0 +1,134 @@
+{
+ "sigma2": 0.5,
+ "alpha_p": 1.0,
+ "dt": 0.001,
+ "eta_crit_tau1": 0.166667,
+ "A1_eta0_parabola": [
+  {
+   "p0": 0.2,
+   "s0": 0.01,
+   "s0_minus_parabola": -0.03,
+   "p_inf": 0.6667,
+   "s_inf": 0.4144,
+   "c_j": 0.03
+  },
+  {
+   "p0": 0.2,
+   "s0": 0.04,
+   "s0_minus_parabola": -0.0,
+   "p_inf": 0.6667,
+   "s_inf": 0.4444,
+   "c_j": 0.0
+  },
+  {
+   "p0": 0.2,
+   "s0": 0.041,
+   "s0_minus_parabola": 0.001,
+   "p_inf": 0.6667,
+   "s_inf": 0.4454,
+   "c_j": -0.001
+  },
+  {
+   "p0": 0.2,
+   "s0": 0.1,
+   "s0_minus_parabola": 0.06,
+   "p_inf": 0.6667,
+   "s_inf": 0.5044,
+   "c_j": -0.06
+  },
+  {
+   "p0": 0.4,
+   "s0": 0.15,
+   "s0_minus_parabola": -0.01,
+   "p_inf": 0.6667,
+   "s_inf": 0.4344,
+   "c_j": 0.01
+  }
+ ],
+ "A1_note": "p_inf should approach tau/(1+sig2)=0.6667 from above the parabola",
+ "A2_eta": 0.05,
+ "A2_p_minus": 0.05445,
+ "A2_p_plus": 0.61222,
+ "A2_basin": [
+  {
+   "p0": 0.02,
+   "predicted_collapse": true,
+   "p_inf": 0.0,
+   "s_inf": 0.0,
+   "observed_collapse": true
+  },
+  {
+   "p0": 0.045,
+   "predicted_collapse": true,
+   "p_inf": 0.0,
+   "s_inf": 0.0,
+   "observed_collapse": true
+  },
+  {
+   "p0": 0.054,
+   "predicted_collapse": true,
+   "p_inf": 0.0,
+   "s_inf": 0.0,
+   "observed_collapse": true
+  },
+  {
+   "p0": 0.0548,
+   "predicted_collapse": false,
+   "p_inf": 0.61222,
+   "s_inf": 0.374813,
+   "observed_collapse": false
+  },
+  {
+   "p0": 0.07,
+   "predicted_collapse": false,
+   "p_inf": 0.61222,
+   "s_inf": 0.374813,
+   "observed_collapse": false
+  },
+  {
+   "p0": 0.2,
+   "predicted_collapse": false,
+   "p_inf": 0.61222,
+   "s_inf": 0.374813,
+   "observed_collapse": false
+  },
+  {
+   "p0": 0.5,
+   "predicted_collapse": false,
+   "p_inf": 0.61222,
+   "s_inf": 0.374813,
+   "observed_collapse": false
+  }
+ ],
+ "A2_agreement": true,
+ "A3_eq17": {
+  "tau_fixed_1": {
+   "frac_steps_eq17_holds": 0.8786,
+   "steps_until_eq17_first_holds": 24278,
+   "p_inf": 0.6667,
+   "s_inf": 0.4439,
+   "tau_inf": 1.0
+  },
+  "ema_beta_0.5": {
+   "frac_steps_eq17_holds": 0.853,
+   "steps_until_eq17_first_holds": 0,
+   "p_inf": 0.6667,
+   "s_inf": 0.4439,
+   "tau_inf": 1.0
+  },
+  "ema_beta_2.0": {
+   "frac_steps_eq17_holds": 0.8711,
+   "steps_until_eq17_first_holds": 0,
+   "p_inf": 0.6667,
+   "s_inf": 0.4439,
+   "tau_inf": 1.0
+  }
+ },
+ "B_alignment": {
+  "commutator_t0": 0.12054,
+  "commutator_t25": 0.00911408,
+  "commutator_tend": 0.0004006544,
+  "decay_factor": 300.9,
+  "max_offdiag_of_Wp_in_F_eigenbasis": 0.002986
+ }
+}

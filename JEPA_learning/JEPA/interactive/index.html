@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JEPA from Scratch — interactive companions</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  @media(max-width:800px){.cards{grid-template-columns:1fr}}
+  a.tile{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid var(--line);
+    border-radius:10px;padding:0;overflow:hidden;transition:border-color .15s, transform .15s}
+  a.tile:hover{border-color:var(--accent);transform:translateY(-2px)}
+  a.tile .thumb{height:132px;background:#fafaf8;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center}
+  a.tile .body{padding:14px 16px 16px}
+  a.tile .ch{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  a.tile h3{margin:5px 0 6px;font-size:17px;font-weight:640;letter-spacing:-.01em}
+  a.tile p{margin:0;font-size:12.8px;color:var(--grey);line-height:1.5}
+  .order{counter-reset:o;list-style:none;padding:0;margin:10px 0 0}
+  .order li{counter-increment:o;position:relative;padding-left:28px;margin-bottom:8px;font-size:13px}
+  .order li::before{content:counter(o);position:absolute;left:0;top:1px;width:19px;height:19px;
+    border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+</style></head><body>
+<div class="wrap">
+<header class="top">
+  <div class="kicker">JEPA from Scratch</div>
+  <h1>Four things to poke at</h1>
+  <p>Companions to <code>JEPA_from_scratch.pdf</code>. Everything runs locally in this page —
+  no server, no network, no build step. Open any file directly from disk.</p>
+</header>
+
+<div class="cards">
+
+<a class="tile" href="masking-visualizer.html">
+  <div class="thumb"><svg width="200" height="100" viewBox="0 0 200 100">
+    <g>
+      <rect x="20" y="6" width="160" height="88" fill="#f0f0ee"/>
+      <g fill="#2980b9">
+        <rect x="22" y="8" width="18" height="18"/><rect x="42" y="8" width="18" height="18"/>
+        <rect x="62" y="8" width="18" height="18"/><rect x="142" y="8" width="18" height="18"/>
+        <rect x="162" y="8" width="16" height="18"/>
+        <rect x="22" y="28" width="18" height="18"/><rect x="162" y="28" width="16" height="18"/>
+        <rect x="22" y="48" width="18" height="18"/><rect x="42" y="48" width="18" height="18"/>
+        <rect x="162" y="48" width="16" height="18"/>
+        <rect x="22" y="68" width="18" height="24"/><rect x="42" y="68" width="18" height="24"/>
+        <rect x="62" y="68" width="18" height="24"/><rect x="82" y="68" width="18" height="24"/>
+        <rect x="142" y="68" width="18" height="24"/><rect x="162" y="68" width="16" height="24"/>
+      </g>
+      <rect x="82" y="8" width="38" height="38" fill="#c0392b"/>
+      <rect x="122" y="28" width="38" height="38" fill="#e67e22"/>
+      <rect x="62" y="28" width="38" height="38" fill="#8e44ad" opacity=".9"/>
+      <rect x="102" y="48" width="38" height="20" fill="#16a085" opacity=".9"/>
+    </g></svg></div>
+  <div class="body"><div class="ch">Chapter 8</div>
+    <h3>Multi-block masking</h3>
+    <p>Best strategy 54.2, worst 15.5, on the paper's own ablation. Drag the scale and
+    aspect-ratio ranges, then find out why the paper's "average context ratio 0.25" depends on
+    a hyperparameter nobody reports next to it.</p></div></a>
+
+<a class="tile" href="collapse-simulator.html">
+  <div class="thumb"><svg width="200" height="100" viewBox="0 0 200 100">
+    <line x1="20" y1="88" x2="188" y2="88" stroke="#c8c8c4"/>
+    <line x1="20" y1="8" x2="20" y2="88" stroke="#c8c8c4"/>
+    <path d="M22 22 C 60 22, 90 24, 186 26" fill="none" stroke="#1e7a4c" stroke-width="2.4"/>
+    <path d="M22 24 C 60 25, 90 27, 186 29" fill="none" stroke="#1f5c99" stroke-width="2.4" stroke-dasharray="5 3"/>
+    <path d="M22 20 C 45 34, 60 66, 90 80 C 120 86, 150 87, 186 87" fill="none" stroke="#b03a2e" stroke-width="2.6"/>
+    <text x="96" y="60" font-family="ui-monospace,monospace" font-size="9" fill="#b03a2e">collapsed</text>
+  </svg></div>
+  <div class="body"><div class="ch">Chapters 4–6</div>
+    <h3>Watch it collapse</h3>
+    <p>Four models trained live with hand-written gradients, identical except for the target
+    branch. One reaches a loss a thousand times lower than the rest and learns nothing.
+    Second tab: the phase portrait that explains why.</p></div></a>
+
+<a class="tile" href="vit-explorer.html">
+  <div class="thumb"><svg width="200" height="100" viewBox="0 0 200 100">
+    <g stroke="#1f5c99" stroke-opacity=".45" fill="none">
+      <rect x="34" y="12" width="76" height="76"/>
+      <line x1="53" y1="12" x2="53" y2="88"/><line x1="72" y1="12" x2="72" y2="88"/>
+      <line x1="91" y1="12" x2="91" y2="88"/>
+      <line x1="34" y1="31" x2="110" y2="31"/><line x1="34" y1="50" x2="110" y2="50"/>
+      <line x1="34" y1="69" x2="110" y2="69"/></g>
+    <rect x="53" y="31" width="19" height="19" fill="none" stroke="#00b0d8" stroke-width="2.4"/>
+    <g fill="#e67e22">
+      <rect x="128" y="44" width="7" height="7"/><rect x="137" y="44" width="7" height="7" fill="#c0392b"/>
+      <rect x="146" y="44" width="7" height="7" fill="#f9a825"/><rect x="155" y="44" width="7" height="7" fill="#8e44ad"/>
+      <rect x="137" y="35" width="7" height="7" fill="#f9a825"/><rect x="137" y="53" width="7" height="7" fill="#f9a825"/>
+      <rect x="137" y="26" width="7" height="7" fill="#e67e22"/><rect x="137" y="62" width="7" height="7" fill="#e67e22"/>
+      <rect x="119" y="44" width="7" height="7"/><rect x="164" y="44" width="7" height="7"/></g>
+    <path d="M112 50 L 116 50" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  </svg></div>
+  <div class="body"><div class="ch">Chapters 3 and 9</div>
+    <h3>Inside the encoder</h3>
+    <p>Draw something and step through every operation: patchify, the fixed sin-cos position
+    table, positional similarity, attention with a content-versus-position slider, and exactly
+    what masking removes.</p></div></a>
+
+<a class="tile" href="latent-planning.html">
+  <div class="thumb"><svg width="200" height="100" viewBox="0 0 200 100">
+    <g fill="#f7f7f5" stroke="#e3e3e0">
+      <rect x="24" y="16" width="152" height="68"/></g>
+    <g fill="#3a3a38"><rect x="96" y="16" width="12" height="26"/><rect x="96" y="58" width="12" height="26"/></g>
+    <path d="M44 50 C 60 50, 70 30, 102 30 C 130 30, 140 48, 156 50"
+      fill="none" stroke="#b03a2e" stroke-width="2.2" stroke-dasharray="5 3"/>
+    <path d="M44 50 C 58 50, 66 40, 78 38" fill="none" stroke="#1f5c99" stroke-width="3"/>
+    <circle cx="44" cy="50" r="8" fill="#1f5c99"/>
+    <rect x="148" y="42" width="16" height="16" fill="#1e7a4c"/>
+    <text x="152" y="54" font-family="-apple-system,sans-serif" font-size="10" font-weight="700" fill="#fff">G</text>
+  </svg></div>
+  <div class="body"><div class="ch">Chapter 13</div>
+    <h3>Planning in latent space</h3>
+    <p>V-JEPA 2's planner in miniature: frozen encoder, action-conditioned predictor learned
+    from random play, Cross-Entropy Method minimising ℓ₁ distance to a goal embedding. Break it
+    with a horizon of one.</p></div></a>
+
+</div>
+
+<div class="card" style="margin-top:22px">
+  <h2>Suggested order</h2>
+  <ol class="order">
+    <li>Read Chapters 1–2 of the PDF, then open <b>Multi-block masking</b> and get a feel for
+    what the two encoders receive.</li>
+    <li>Open <b>Watch it collapse</b> and run it before reading Chapter 5. The theory is much
+    easier once you have seen a loss go to zero while a representation dies.</li>
+    <li>Read Chapter 5, then come back to the second tab of the same page and check the
+    p*₋ = 0.05445 prediction yourself.</li>
+    <li>Read Chapters 7–10 alongside <b>Inside the encoder</b> and the PyTorch code in
+    <code>../code/</code>.</li>
+    <li>After Chapter 13, open <b>Planning in latent space</b> and try to make it fail.</li>
+  </ol>
+</div>
+
+<div class="box t" style="margin-top:18px"><b class="tag">What these are and are not</b>
+These pages use real algorithms on toy data. The collapse simulator trains actual networks with
+actual gradients, and the phase portrait integrates the actual published equations. But the
+models are thousands of times smaller than the ones in the papers, there is no attention in the
+collapse demo, and the ViT weights in the encoder explorer are random rather than trained. They
+are for building intuition. The PyTorch code in <code>../code/</code> is for checking whether
+the intuition survives.</div>
+
+<footer class="bot">
+Built for Kelvin as a companion to <code>JEPA_from_scratch.pdf</code>. Primary sources:
+<a href="https://arxiv.org/abs/2301.08243">I-JEPA</a> ·
+<a href="https://arxiv.org/abs/2404.08471">V-JEPA</a> ·
+<a href="https://arxiv.org/abs/2506.09985">V-JEPA 2</a> ·
+<a href="https://openreview.net/pdf?id=BZ5a1r-kVsf">LeCun's position paper</a> ·
+<a href="https://arxiv.org/abs/2102.06810">Tian, Chen &amp; Ganguli</a> ·
+<a href="https://arxiv.org/abs/2011.10566">SimSiam</a>. Full bibliography in Chapter 15.
+</footer>
+</div>
+</body></html>

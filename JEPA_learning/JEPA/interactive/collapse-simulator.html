@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Collapse simulator — JEPA from Scratch</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  .plots{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:820px){.plots{grid-template-columns:1fr}}
+  .plots canvas{width:100%;background:#fff;border:1px solid var(--line)}
+  .vtable td.b{font-family:var(--mono);font-size:12px}
+  .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px}
+  .tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;
+    padding:7px 13px;font-size:13px;color:var(--grey)}
+  .tabs button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;background:none}
+  .pane{display:none} .pane.on{display:block}
+  #phase{cursor:crosshair}
+</style></head><body>
+<div class="wrap">
+<header class="top">
+  <div class="crumb"><a href="index.html">← all four</a> · Chapters 4–6</div>
+  <div class="kicker">Interactive 2 of 4</div>
+  <h1>Watch it collapse</h1>
+  <p>Four joint-embedding models, identical except for the target branch, trained live in your
+  browser with hand-written gradients. One of them reaches a loss three orders of magnitude
+  lower than the others and learns nothing at all.</p>
+</header>
+
+<div class="tabs">
+  <button class="on" data-tab="train">Train four variants</button>
+  <button data-tab="theory">The theory behind it</button>
+</div>
+
+<!-- ============================================ TRAIN ============================ -->
+<div class="pane on" id="pane-train">
+<div class="grid g2">
+<div>
+  <div class="card">
+    <h2>Run</h2>
+    <div class="row"><button class="primary" id="go">Train</button>
+      <button id="reset">Reset</button>
+      <button id="fast">1× speed</button></div>
+    <div class="stat" style="margin-top:9px"><span>step</span><span id="step">0</span></div>
+    <div class="ctl" style="margin-top:11px"><label>learning rate <b id="vLR">4e-3</b></label>
+      <input type="range" id="LR" min="-4" max="-1.6" step="0.1" value="-2.4"></div>
+    <div class="ctl"><label>EMA momentum <i>m</i> <b id="vEM">0.99</b></label>
+      <input type="range" id="EM" min="0" max="0.999" step="0.001" value="0.99">
+      <div class="hint">Applies to the <span class="swatch" style="background:#1e7a4c"></span>EMA
+      variant only. m = 0 is a hard copy (= stop-grad only); m = 1 freezes the target.</div></div>
+    <div class="ctl"><label>target blocks <i>M</i> <b id="vM">2</b></label>
+      <input type="range" id="M" min="1" max="4" step="1" value="2"></div>
+    <div class="ctl"><label>target LayerNorm <b id="vLN">on</b></label>
+      <input type="range" id="LN" min="0" max="1" step="1" value="1">
+      <div class="hint">The undocumented detail from Chapter 7. Turn it off and see what the
+      loss does versus what the representation does.</div></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Diagnostics</h2>
+    <table class="k vtable"><thead><tr>
+      <th>variant</th><th>loss</th><th>std ratio</th><th>‖z‖</th><th>rank</th><th>probe</th></tr></thead>
+      <tbody id="tbody"></tbody></table>
+    <p class="note" style="margin:9px 0 0">
+      <b>std ratio</b> is the mean per-channel std of ℓ₂-normalised embeddings, divided by
+      1/√D. Healthy ≈ 0.7–1.0; under 0.05 is collapsed. <b>rank</b> counts embedding
+      directions above 1% of the top singular value, out of D = 16. <b>probe</b> is a ridge
+      linear probe on 4 classes. <b>‖z‖</b> is the mean embedding norm — watch it when you turn
+      the target LayerNorm off. Chance is 25%, but the number that matters is the
+      <i>untrained</i> encoder, averaged over three random initialisations:
+      <b><span id="ctrl">–</span></b>. Note how high that is. A random 2-layer MLP is a
+      surprisingly good feature extractor, and any claim that does not beat it is not a
+      claim.</p>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>The setup</h2>
+    <p class="note">16×16 images, 4×4 patch grid, four shape classes. Encoder is a 2-layer
+    MLP per patch (16 → 32 → 16); the context representation is the mean of visible patch
+    embeddings; the predictor is a 2-layer MLP on [context ; block position]. No attention,
+    so every gradient is hand-derivable and you can read the code. Everything that matters for
+    collapse is present: asymmetry, stop-gradient, EMA, a latent-space loss, a predictor.</p>
+  </div>
+</div>
+
+<div>
+  <div class="plots">
+    <div><canvas id="pLoss" width="520" height="260"></canvas>
+      <div class="note" style="text-align:center">(a) the loss — log scale</div></div>
+    <div><canvas id="pStd" width="520" height="260"></canvas>
+      <div class="note" style="text-align:center">(b) embedding std / (1/√D) — log scale</div></div>
+    <div><canvas id="pRank" width="520" height="260"></canvas>
+      <div class="note" style="text-align:center">(c) effective rank, out of 16</div></div>
+    <div><canvas id="pSpec" width="520" height="260"></canvas>
+      <div class="note" style="text-align:center">(d) singular spectrum of Cov(z), normalised</div></div>
+  </div>
+  <div class="legend" id="leg"></div>
+
+  <div class="box k"><b class="tag">What to watch</b>
+  Panel (a) and panel (b) tell opposite stories about the red curve. In a joint-embedding
+  architecture the loss is not merely uninformative — it is <i>anti</i>-correlated with
+  representation quality, because the cheapest way to make two embeddings agree is to make
+  every embedding identical.</div>
+
+  <div class="box g"><b class="tag">Three experiments</b>
+  <b>1.</b> Set EMA <i>m</i> to 0 and watch the green curve become the blue one. It does not
+  collapse — stop-gradient alone is enough, which is SimSiam's finding: the EMA is
+  "not directly related to preventing collapsing". Whether EMA also <i>helps</i> takes a few
+  thousand steps to settle here; below about 2000 steps the two are within noise of each other,
+  and after 4000 the EMA run is usually ahead. Do not read a 2-point gap at step 300 as a
+  result.<br>
+  <b>2.</b> Set <i>m</i> to 1. The target is now a frozen untrained network. No collapse, but
+  a low ceiling: you are predicting random features.<br>
+  <b>3.</b> Turn the target LayerNorm off and watch the <b>‖z‖</b> column. Collapse changes
+  <i>route</i>: with the LayerNorm on, the no-stop-gradient run makes every embedding point the
+  same direction (std ratio → 0.01, ‖z‖ stays large); with it off, it instead shrinks the
+  embedding <i>scale</i> towards zero (‖z‖ → 0.05) while the std ratio stays deceptively
+  respectable. Two different degeneracies, one loss function, and the std-ratio diagnostic only
+  catches one of them.</div>
+</div>
+</div>
+</div>
+
+<!-- ============================================ THEORY =========================== -->
+<div class="pane" id="pane-theory">
+<div class="grid g2">
+<div>
+  <div class="card">
+    <h2>Linear-model dynamics</h2>
+    <p class="note">Tian, Chen &amp; Ganguli reduce the whole question to two scalars per
+    eigenmode: <i>p</i>, the predictor's eigenvalue, and <i>s</i>, the eigenvalue of
+    F = WXWᵀ (the online network's output covariance). With a stop-gradient in place,</p>
+    <p class="note" style="font-family:var(--serif);font-size:13.5px;text-align:center;line-height:1.9">
+      ṗ = α<sub>p</sub> s [τ − (1+σ²)p] − ηp<br>
+      ṡ = 2ps [τ − (1+σ²)p] − 2ηs</p>
+    <p class="note">Click anywhere on the phase plane to launch a trajectory from that point.</p>
+    <div class="ctl" style="margin-top:12px"><label>weight decay η <b id="vEta">0.050</b></label>
+      <input type="range" id="eta" min="0" max="0.24" step="0.002" value="0.05"></div>
+    <div class="ctl"><label>augmentation σ² <b id="vSig">0.50</b></label>
+      <input type="range" id="sig" min="0.05" max="2" step="0.05" value="0.5"></div>
+    <div class="ctl"><label>τ (EMA proportionality) <b id="vTau">1.00</b></label>
+      <input type="range" id="tau" min="0.05" max="1" step="0.01" value="1"></div>
+    <div class="row"><button id="clearTraj">Clear trajectories</button>
+      <button id="sweep">Launch 40 from a grid</button></div>
+
+    <div class="stat" style="margin-top:12px"><span>p*₋ (unstable, basin edge)</span><span id="fpm">–</span></div>
+    <div class="stat"><span>p*₊ (stable, useful)</span><span id="fpp">–</span></div>
+    <div class="stat"><span>η<sub>crit</sub> = τ²/[4(1+σ²)]</span><span id="ec">–</span></div>
+    <div class="stat"><span>regime</span><span id="reg">–</span></div>
+  </div>
+</div>
+<div>
+  <canvas id="phase" width="640" height="420" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:6px"></canvas>
+  <div class="legend">
+    <span><i style="background:#1a1a1a"></i>invariant parabola s = p²/α<sub>p</sub></span>
+    <span><i style="background:#1e7a4c"></i>escapes</span>
+    <span><i style="background:#b03a2e"></i>collapses</span>
+    <span><i style="background:#fbedeb"></i>collapse basin</span>
+  </div>
+  <div class="box a"><b class="tag">The prediction to check</b>
+  At η = 0.05, σ² = 0.5, τ = 1 the theory says the basin edge sits at
+  p*₋ = 0.05445. Click just left and just right of the dotted red line, on the parabola, and
+  see that it is right. My numerical integration agrees at four significant figures — see
+  Figure 5.1 of the book and <code>exp/tian_dynamics.py</code>.</div>
+  <div class="box t"><b class="tag">Now push η past η<sub>crit</sub></b>
+  Above τ²/[4(1+σ²)] the two positive fixed points annihilate in a saddle-node bifurcation and
+  zero is the only attractor left. Every initialisation collapses, no matter how well you tune
+  anything else. That is why the weight-decay schedule in I-JEPA matters, and why it
+  <i>ramps up</i> rather than starting high.</div>
+</div>
+</div>
+</div>
+
+<footer class="bot">
+Sources: Chen &amp; He, <i>Exploring Simple Siamese Representation Learning</i>, CVPR 2021 —
+<a href="https://arxiv.org/abs/2011.10566">arxiv.org/abs/2011.10566</a> (stop-gradient is what
+matters; the momentum encoder is not necessary for non-collapse) ·
+Tian, Chen &amp; Ganguli, <i>Understanding self-supervised learning dynamics without contrastive
+pairs</i>, ICML 2021 — <a href="https://arxiv.org/abs/2102.06810">arxiv.org/abs/2102.06810</a>
+(Theorems 2–3, Eqs. 11–17) · Garrido, Balestriero, Najman &amp; LeCun, <i>RankMe</i>, ICML 2023 —
+<a href="https://arxiv.org/abs/2210.02885">arxiv.org/abs/2210.02885</a>.
+</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); $('pane-'+b.dataset.tab).classList.add('on');
+  if(b.dataset.tab==='theory') drawPhase();
+});
+
+/* ================= tiny linear algebra ================= */
+function mat(r,c,f){const a=new Float64Array(r*c); if(f) for(let i=0;i<a.length;i++) a[i]=f(); return {r,c,a};}
+function randn(){let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function he(r,c){const s=Math.sqrt(2/r); return mat(r,c,()=>randn()*s);}
+// symmetric eigenvalues by cyclic Jacobi (D is 16, so this is free)
+function eigSym(A,n){
+  const a=A.slice();
+  for(let sweep=0;sweep<40;sweep++){
+    let off=0;
+    for(let p=0;p<n-1;p++) for(let q=p+1;q<n;q++) off+=a[p*n+q]*a[p*n+q];
+    if(off<1e-18) break;
+    for(let p=0;p<n-1;p++) for(let q=p+1;q<n;q++){
+      if(Math.abs(a[p*n+q])<1e-15) continue;
+      const th=0.5*Math.atan2(2*a[p*n+q], a[q*n+q]-a[p*n+p]);
+      const c=Math.cos(th), s=Math.sin(th);
+      for(let k=0;k<n;k++){
+        const akp=a[k*n+p], akq=a[k*n+q];
+        a[k*n+p]=c*akp-s*akq; a[k*n+q]=s*akp+c*akq;
+      }
+      for(let k=0;k<n;k++){
+        const apk=a[p*n+k], aqk=a[q*n+k];
+        a[p*n+k]=c*apk-s*aqk; a[q*n+k]=s*apk+c*aqk;
+      }
+    }
+  }
+  const ev=[]; for(let i=0;i<n;i++) ev.push(Math.max(0,a[i*n+i]));
+  return ev.sort((x,y)=>y-x);
+}
+function solveSym(A,B,n,m){ // Gaussian elimination, A n×n, B n×m, in place
+  const a=A.slice(), b=B.slice();
+  for(let i=0;i<n;i++){
+    let mx=i; for(let k=i+1;k<n;k++) if(Math.abs(a[k*n+i])>Math.abs(a[mx*n+i])) mx=k;
+    if(mx!==i){ for(let j=0;j<n;j++){const t=a[i*n+j];a[i*n+j]=a[mx*n+j];a[mx*n+j]=t;}
+                for(let j=0;j<m;j++){const t=b[i*m+j];b[i*m+j]=b[mx*m+j];b[mx*m+j]=t;} }
+    const d=a[i*n+i]||1e-12;
+    for(let k=i+1;k<n;k++){ const f=a[k*n+i]/d; if(!f) continue;
+      for(let j=i;j<n;j++) a[k*n+j]-=f*a[i*n+j];
+      for(let j=0;j<m;j++) b[k*m+j]-=f*b[i*m+j]; }
+  }
+  const x=new Float64Array(n*m);
+  for(let i=n-1;i>=0;i--) for(let j=0;j<m;j++){
+    let s=b[i*m+j]; for(let k=i+1;k<n;k++) s-=a[i*n+k]*x[k*m+j];
+    x[i*m+j]=s/(a[i*n+i]||1e-12);
+  }
+  return x;
+}
+
+/* ================= data ================= */
+const IMG=16, PS=4, G=IMG/PS, NP=G*G, PD=PS*PS, D=16, H=32, NC=4;
+function makeSet(n){
+  const P=[], Y=[];
+  for(let k=0;k<n;k++){
+    const y=k%NC, img=new Float64Array(IMG*IMG);
+    for(let i=0;i<img.length;i++) img[i]=0.12*randn()+0.25;
+    const h=6+Math.floor(Math.random()*6), w=6+Math.floor(Math.random()*6);
+    const r0=Math.floor(Math.random()*(IMG-h)), c0=Math.floor(Math.random()*(IMG-w));
+    const v=0.75+0.25*Math.random();
+    const set=(i,j,val)=>{ if(i>=0&&i<IMG&&j>=0&&j<IMG) img[i*IMG+j]=val; };
+    if(y===0){ for(let i=r0;i<r0+h;i++) for(let j=c0;j<c0+w;j++) set(i,j,v); }              // block
+    else if(y===1){ for(let i=r0;i<r0+h;i++) for(let j=c0;j<c0+w;j++)
+        if(i===r0||i===r0+h-1||j===c0||j===c0+w-1) set(i,j,v); }                            // ring
+    else if(y===2){ for(let i=0;i<Math.min(h,w);i++) for(let j=0;j<w-i;j++) set(r0+i,c0+j,v);} // triangle
+    else { for(let i=r0;i<r0+h;i+=2) for(let j=c0;j<c0+w;j++) set(i,j,v); }                 // stripes
+    // patchify, row-major
+    const pv=new Float64Array(NP*PD);
+    for(let gi=0;gi<G;gi++) for(let gj=0;gj<G;gj++)
+      for(let a=0;a<PS;a++) for(let b=0;b<PS;b++)
+        pv[(gi*G+gj)*PD + a*PS + b] = img[(gi*PS+a)*IMG + (gj*PS+b)];
+    P.push(pv); Y.push(y);
+  }
+  // global standardise
+  let mu=0,c=0; P.forEach(p=>p.forEach(v=>{mu+=v;c++;})); mu/=c;
+  let sd=0; P.forEach(p=>p.forEach(v=>{sd+=(v-mu)*(v-mu);})); sd=Math.sqrt(sd/c)+1e-9;
+  P.forEach(p=>{ for(let i=0;i<p.length;i++) p[i]=(p[i]-mu)/sd; });
+  return {P,Y};
+}
+const TR=makeSet(1200), TE=makeSet(400);
+
+/* ================= masks ================= */
+function sampleMask(M){
+  for(let t=0;t<60;t++){
+    const occ=new Uint8Array(NP), tg=[];
+    for(let k=0;k<M;k++){
+      const r0=Math.floor(Math.random()*(G-1)), c0=Math.floor(Math.random()*(G-1));
+      const m=[];
+      for(let i=r0;i<r0+2;i++) for(let j=c0;j<c0+2;j++){ m.push(i*G+j); occ[i*G+j]=1; }
+      tg.push(m);
+    }
+    const ctx=[]; for(let i=0;i<NP;i++) if(!occ[i]) ctx.push(i);
+    if(ctx.length>=4) return {tg,ctx};
+  }
+  return {tg:[[0,1,G,G+1]], ctx:[NP-1,NP-2,NP-G-1,NP-G-2]};
+}
+
+/* ================= model ================= */
+function newModel(){
+  const m={ W1:he(PD,H), b1:mat(1,H), W2:he(H,D), b2:mat(1,D),
+            P1:he(D+NP,H), q1:mat(1,H), P2:he(H,D), q2:mat(1,D) };
+  m.keys=['W1','b1','W2','b2','P1','q1','P2','q2'];
+  m.mom={}; m.vel={}; m.keys.forEach(k=>{ m.mom[k]=new Float64Array(m[k].a.length);
+                                          m.vel[k]=new Float64Array(m[k].a.length); });
+  return m;
+}
+function cloneModel(m){ const t={keys:m.keys};
+  m.keys.forEach(k=>t[k]={r:m[k].r,c:m[k].c,a:m[k].a.slice()}); return t; }
+function encPatch(m,x,off){ // one patch [PD] -> {h [H], z [D]}
+  const h=new Float64Array(H);
+  for(let j=0;j<H;j++){ let s=m.b1.a[j];
+    for(let i=0;i<PD;i++) s+=x[off+i]*m.W1.a[i*H+j];
+    h[j]=Math.tanh(s); }
+  const z=new Float64Array(D);
+  for(let j=0;j<D;j++){ let s=m.b2.a[j];
+    for(let i=0;i<H;i++) s+=h[i]*m.W2.a[i*D+j];
+    z[j]=s; }
+  return {h,z};
+}
+function embedImage(m,pv){ // mean-pooled over all patches
+  const z=new Float64Array(D);
+  for(let k=0;k<NP;k++){ const o=encPatch(m,pv,k*PD).z; for(let j=0;j<D;j++) z[j]+=o[j]/NP; }
+  return z;
+}
+function layerNorm(z){
+  let mu=0; for(const v of z) mu+=v; mu/=z.length;
+  let va=0; for(const v of z) va+=(v-mu)*(v-mu); va/=z.length;
+  const sd=Math.sqrt(va+1e-6), o=new Float64Array(z.length);
+  for(let i=0;i<z.length;i++) o[i]=(z[i]-mu)/sd;
+  return o;
+}
+
+/* ================= one training step (manual gradients) ================= */
+function step(V, cfgv){
+  const m=V.m, tm=V.target, BS=24, {tg,ctx}=sampleMask(cfgv.M);
+  const grad={}; m.keys.forEach(k=>grad[k]=new Float64Array(m[k].a.length));
+  let loss=0;
+  const src = (V.mode==='ema'||V.mode==='frozen') ? tm : m;
+
+  for(let b=0;b<BS;b++){
+    const pv=TR.P[Math.floor(Math.random()*TR.P.length)];
+    // ---- context branch (online)
+    const cache=[], c=new Float64Array(D);
+    for(const k of ctx){ const o=encPatch(m,pv,k*PD); cache.push(o);
+      for(let j=0;j<D;j++) c[j]+=o.z[j]/ctx.length; }
+    // ---- target branch
+    const tCache=[], tz=[];
+    for(let k=0;k<NP;k++){ const o=encPatch(src,pv,k*PD); tCache.push(o);
+      tz.push(cfgv.LN? layerNorm(o.z) : o.z); }
+
+    const dc=new Float64Array(D);
+    tg.forEach(blk=>{
+      // block-mean target
+      const t=new Float64Array(D);
+      blk.forEach(k=>{ for(let j=0;j<D;j++) t[j]+=tz[k][j]/blk.length; });
+      // predictor forward
+      const inp=new Float64Array(D+NP);
+      for(let j=0;j<D;j++) inp[j]=c[j];
+      blk.forEach(k=>inp[D+k]=1);
+      const hp=new Float64Array(H);
+      for(let j=0;j<H;j++){ let s=m.q1.a[j];
+        for(let i=0;i<D+NP;i++) s+=inp[i]*m.P1.a[i*H+j]; hp[j]=Math.tanh(s); }
+      const zh=new Float64Array(D);
+      for(let j=0;j<D;j++){ let s=m.q2.a[j];
+        for(let i=0;i<H;i++) s+=hp[i]*m.P2.a[i*D+j]; zh[j]=s; }
+      // loss + grad
+      const dz=new Float64Array(D), sc=2/(BS*tg.length);
+      for(let j=0;j<D;j++){ const r=zh[j]-t[j]; loss+=r*r/(BS*tg.length); dz[j]=r*sc; }
+      for(let i=0;i<H;i++) for(let j=0;j<D;j++) grad.P2[i*D+j]+=hp[i]*dz[j];
+      for(let j=0;j<D;j++) grad.q2[j]+=dz[j];
+      const dh=new Float64Array(H);
+      for(let i=0;i<H;i++){ let s=0; for(let j=0;j<D;j++) s+=m.P2.a[i*D+j]*dz[j];
+        dh[i]=s*(1-hp[i]*hp[i]); }
+      for(let i=0;i<D+NP;i++) for(let j=0;j<H;j++) grad.P1[i*H+j]+=inp[i]*dh[j];
+      for(let j=0;j<H;j++) grad.q1[j]+=dh[j];
+      for(let j=0;j<D;j++){ let s=0; for(let i=0;i<H;i++) s+=m.P1.a[j*H+i]*dh[i]; dc[j]+=s; }
+
+      // ---- the ablation: with mode 'shared' the gradient also enters the target
+      if(V.mode==='shared'){
+        blk.forEach(k=>{
+          let dt=new Float64Array(D);
+          for(let j=0;j<D;j++) dt[j] = -dz[j]/blk.length;
+          if(cfgv.LN){ // backprop the stateless LayerNorm
+            const z=tCache[k].z; let mu=0; for(const v of z) mu+=v; mu/=D;
+            let va=0; for(const v of z) va+=(v-mu)*(v-mu); va/=D;
+            const sd=Math.sqrt(va+1e-6);
+            let sdt=0, sdtx=0;
+            for(let j=0;j<D;j++){ sdt+=dt[j]; sdtx+=dt[j]*(z[j]-mu)/sd; }
+            const o=new Float64Array(D);
+            for(let j=0;j<D;j++) o[j]=(dt[j]-sdt/D-((z[j]-mu)/sd)*(sdtx/D))/sd;
+            dt=o;
+          }
+          const hh=tCache[k].h;
+          for(let i=0;i<H;i++) for(let j=0;j<D;j++) grad.W2[i*D+j]+=hh[i]*dt[j];
+          for(let j=0;j<D;j++) grad.b2[j]+=dt[j];
+          const dh2=new Float64Array(H);
+          for(let i=0;i<H;i++){ let s=0; for(let j=0;j<D;j++) s+=m.W2.a[i*D+j]*dt[j];
+            dh2[i]=s*(1-hh[i]*hh[i]); }
+          for(let i=0;i<PD;i++) for(let j=0;j<H;j++) grad.W1[i*H+j]+=pv[k*PD+i]*dh2[j];
+          for(let j=0;j<H;j++) grad.b1[j]+=dh2[j];
+        });
+      }
+    });
+    // ---- context branch backward
+    ctx.forEach((k,ii)=>{
+      const dzc=new Float64Array(D);
+      for(let j=0;j<D;j++) dzc[j]=dc[j]/ctx.length;
+      const hh=cache[ii].h;
+      for(let i=0;i<H;i++) for(let j=0;j<D;j++) grad.W2[i*D+j]+=hh[i]*dzc[j];
+      for(let j=0;j<D;j++) grad.b2[j]+=dzc[j];
+      const dh2=new Float64Array(H);
+      for(let i=0;i<H;i++){ let s=0; for(let j=0;j<D;j++) s+=m.W2.a[i*D+j]*dzc[j];
+        dh2[i]=s*(1-hh[i]*hh[i]); }
+      for(let i=0;i<PD;i++) for(let j=0;j<H;j++) grad.W1[i*H+j]+=pv[k*PD+i]*dh2[j];
+      for(let j=0;j<H;j++) grad.b1[j]+=dh2[j];
+    });
+  }
+  // ---- Adam
+  V.t++;
+  const lr=cfgv.lr, b1=0.9, b2=0.999;
+  m.keys.forEach(k=>{
+    const g=grad[k], p=m[k].a, mo=m.mom[k], ve=m.vel[k];
+    for(let i=0;i<p.length;i++){
+      mo[i]=b1*mo[i]+(1-b1)*g[i]; ve[i]=b2*ve[i]+(1-b2)*g[i]*g[i];
+      p[i]-=lr*(mo[i]/(1-Math.pow(b1,V.t)))/(Math.sqrt(ve[i]/(1-Math.pow(b2,V.t)))+1e-8);
+    }
+  });
+  // ---- target update
+  if(V.mode==='ema'){ const mm=cfgv.ema;
+    m.keys.forEach(k=>{ const a=tm[k].a, o=m[k].a;
+      for(let i=0;i<a.length;i++) a[i]=mm*a[i]+(1-mm)*o[i]; }); }
+  else if(V.mode==='stopgrad'){
+    m.keys.forEach(k=>tm[k].a.set(m[k].a)); }
+  // 'frozen' never updates; 'shared' has no separate target
+  V.loss=loss;
+  return loss;
+}
+
+/* ================= diagnostics ================= */
+function diagnose(V){
+  const src = (V.mode==='shared') ? V.m : V.target;
+  const Z=[], n=Math.min(150,TE.P.length);
+  for(let i=0;i<n;i++) Z.push(embedImage(src,TE.P[i]));
+  // std of l2-normalised
+  let stdSum=0;
+  const N=new Array(n);
+  for(let i=0;i<n;i++){ let nn=0; for(const v of Z[i]) nn+=v*v; nn=Math.sqrt(nn)+1e-12;
+    N[i]=Z[i].map(v=>v/nn); }
+  for(let j=0;j<D;j++){ let mu=0; for(let i=0;i<n;i++) mu+=N[i][j]; mu/=n;
+    let va=0; for(let i=0;i<n;i++) va+=(N[i][j]-mu)*(N[i][j]-mu); stdSum+=Math.sqrt(va/n); }
+  const stdRatio=(stdSum/D)*Math.sqrt(D);
+  let scale=0; for(let i=0;i<n;i++){ let q=0; for(const v of Z[i]) q+=v*v; scale+=Math.sqrt(q)/n; }
+  // covariance spectrum
+  const mu=new Float64Array(D);
+  for(let i=0;i<n;i++) for(let j=0;j<D;j++) mu[j]+=Z[i][j]/n;
+  const C=new Float64Array(D*D);
+  for(let i=0;i<n;i++) for(let a=0;a<D;a++) for(let b=0;b<D;b++)
+    C[a*D+b]+=(Z[i][a]-mu[a])*(Z[i][b]-mu[b])/n;
+  const ev=eigSym(C,D), sv=ev.map(v=>Math.sqrt(Math.max(v,0)));
+  const top=sv[0]||1e-30;
+  const rank=sv.filter(v=>v>0.01*top && v>1e-7).length;
+  // ridge probe on 200 labelled training images
+  const NL=120, K=D+1;
+  const A=new Float64Array(K*K), Bm=new Float64Array(K*NC);
+  const feats=[];
+  for(let i=0;i<NL;i++){ const z=embedImage(src,TR.P[i]); const f=new Float64Array(K);
+    for(let j=0;j<D;j++) f[j]=z[j]; f[D]=1; feats.push(f); }
+  // standardise
+  const fm=new Float64Array(K), fs=new Float64Array(K).fill(1);
+  for(let j=0;j<D;j++){ let s=0; for(let i=0;i<NL;i++) s+=feats[i][j]; fm[j]=s/NL;
+    let v=0; for(let i=0;i<NL;i++) v+=(feats[i][j]-fm[j])**2; fs[j]=Math.sqrt(v/NL)+1e-8; }
+  const norm=f=>{ const o=new Float64Array(K);
+    for(let j=0;j<D;j++) o[j]=(f[j]-fm[j])/fs[j]; o[D]=1; return o; };
+  for(let i=0;i<NL;i++){ const f=norm(feats[i]);
+    for(let a=0;a<K;a++){ for(let b=0;b<K;b++) A[a*K+b]+=f[a]*f[b];
+      Bm[a*NC+TR.Y[i]]+=f[a]; } }
+  for(let a=0;a<K;a++) A[a*K+a]+=1.0;
+  const Wp=solveSym(A,Bm,K,NC);
+  let correct=0, ntest=n;
+  for(let i=0;i<ntest;i++){ const f=norm((()=>{const z=Z[i]; const o=new Float64Array(K);
+      for(let j=0;j<D;j++) o[j]=z[j]; o[D]=1; return o;})());
+    let best=-1,bv=-1e30;
+    for(let cl=0;cl<NC;cl++){ let s=0; for(let a=0;a<K;a++) s+=f[a]*Wp[a*NC+cl];
+      if(s>bv){bv=s;best=cl;} }
+    if(best===TE.Y[i]) correct++; }
+  return {stdRatio, scale, rank, sv, probe:correct/ntest};
+}
+
+/* ================= variants + loop ================= */
+const SPEC=[
+  {mode:'shared',   label:'no stop-gradient',        col:'#b03a2e'},
+  {mode:'stopgrad', label:'stop-gradient only',      col:'#1f5c99'},
+  {mode:'ema',      label:'stop-gradient + EMA',     col:'#1e7a4c'},
+  {mode:'frozen',   label:'frozen target (m = 1)',   col:'#8a8a86'}
+];
+let V=[], hist=[], running=false, speed=1, ctrlProbe=null;
+function reset(){
+  V=SPEC.map(s=>{ const m=newModel(); return {mode:s.mode,label:s.label,col:s.col,
+    m, target:cloneModel(m), t:0, loss:NaN, d:null}; });
+  hist=V.map(()=>({step:[],loss:[],std:[],rank:[]}));
+  if(ctrlProbe===null){ let acc=0;
+    for(let k=0;k<3;k++){ const mm=newModel(); acc+=diagnose({mode:'shared',m:mm,target:mm}).probe; }
+    ctrlProbe=acc/3;
+    $('ctrl').textContent=(ctrlProbe*100).toFixed(1)+'%'; }
+  V.forEach((v,i)=>{ v.d=diagnose(v); push(i,v); });
+  $('step').textContent=0; render();
+}
+function push(i,v){ const h=hist[i];
+  h.step.push(v.t); h.loss.push(v.loss); h.std.push(v.d.stdRatio); h.rank.push(v.d.rank); }
+function cfgv(){ return {lr:Math.pow(10,+$('LR').value), ema:+$('EM').value,
+                         M:+$('M').value, LN:+$('LN').value===1}; }
+function loop(){
+  if(!running) return;
+  const c=cfgv();
+  for(let k=0;k<speed;k++) V.forEach(v=>step(v,c));
+  if(V[0].t % 20 === 0){ V.forEach((v,i)=>{ v.d=diagnose(v); push(i,v); }); render(); }
+  $('step').textContent=V[0].t;
+  requestAnimationFrame(loop);
+}
+
+/* ================= plotting ================= */
+function axes(cv,{xmax,ymin,ymax,log,ylab,yticks}){
+  const x=cv.getContext('2d'), W=cv.width, Hh=cv.height, L=48,R=8,T=10,B=26;
+  x.clearRect(0,0,W,Hh); x.strokeStyle='#e3e3e0'; x.lineWidth=1;
+  x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+  const tx = v => L + (v/Math.max(xmax,1))*(W-L-R);
+  const ty = v => { const f = log ? (Math.log10(Math.max(v,ymin))-Math.log10(ymin))/(Math.log10(ymax)-Math.log10(ymin))
+                                  : (v-ymin)/(ymax-ymin);
+                    return Hh-B-Math.max(0,Math.min(1,f))*(Hh-T-B); };
+  (yticks||[]).forEach(t=>{ const y=ty(t);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(W-R,y); x.stroke();
+    x.fillText(typeof t==='number'? (t>=1? t.toString(): t.toExponential(0)) : t, 4, y+3); });
+  x.strokeStyle='#c8c8c4'; x.beginPath(); x.moveTo(L,T); x.lineTo(L,Hh-B); x.lineTo(W-R,Hh-B); x.stroke();
+  x.fillText('step', W-R-24, Hh-8);
+  return {x,tx,ty,L,R,T,B,W,H:Hh};
+}
+function line(a,xs,ys,col){
+  a.x.strokeStyle=col; a.x.lineWidth=1.6; a.x.beginPath();
+  let started=false;
+  for(let i=0;i<xs.length;i++){ const v=ys[i]; if(!isFinite(v)) continue;
+    const px=a.tx(xs[i]), py=a.ty(v);
+    if(!started){ a.x.moveTo(px,py); started=true; } else a.x.lineTo(px,py); }
+  a.x.stroke();
+}
+function render(){
+  const xmax=Math.max(200, V[0].t);
+  let a=axes($('pLoss'),{xmax,ymin:1e-5,ymax:100,log:true,yticks:[1e-5,1e-3,1e-1,10]});
+  V.forEach((v,i)=>line(a,hist[i].step,hist[i].loss,v.col));
+  a=axes($('pStd'),{xmax,ymin:1e-4,ymax:2,log:true,yticks:[1e-4,1e-3,1e-2,0.1,1]});
+  a.x.strokeStyle='#b03a2e'; a.x.setLineDash([3,3]);
+  a.x.beginPath(); a.x.moveTo(a.L,a.ty(0.05)); a.x.lineTo(a.W-a.R,a.ty(0.05)); a.x.stroke();
+  a.x.setLineDash([]); a.x.fillStyle='#b03a2e'; a.x.fillText('collapsed', a.L+5, a.ty(0.05)-4);
+  V.forEach((v,i)=>line(a,hist[i].step,hist[i].std,v.col));
+  a=axes($('pRank'),{xmax,ymin:0,ymax:17,log:false,yticks:[0,4,8,12,16]});
+  V.forEach((v,i)=>line(a,hist[i].step,hist[i].rank,v.col));
+  // spectrum
+  const cv=$('pSpec'), x=cv.getContext('2d');
+  const b=axes(cv,{xmax:D,ymin:1e-4,ymax:1.4,log:true,yticks:[1e-4,1e-3,1e-2,0.1,1]});
+  b.x.fillText('singular value index', b.W-b.R-120, b.H-8);
+  V.forEach(v=>{ const sv=v.d.sv, top=sv[0]||1e-30;
+    line(b, sv.map((_,i)=>i+1), sv.map(s=>s/top), v.col); });
+  // table
+  $('tbody').innerHTML = V.map(v=>{
+    const d=v.d, vc = d.stdRatio<0.05?'v-bad':(d.stdRatio<0.30?'v-warn':'v-ok');
+    return `<tr><td><span class="swatch" style="background:${v.col}"></span>${v.label}</td>
+      <td class="b">${isFinite(v.loss)? v.loss.toExponential(2):'–'}</td>
+      <td class="b"><span class="verdict ${vc}">${d.stdRatio.toFixed(4)}</span></td>
+      <td class="b">${d.scale.toFixed(3)}</td>
+      <td class="b">${d.rank}</td>
+      <td class="b">${(d.probe*100).toFixed(1)}%</td></tr>`;}).join('');
+  $('leg').innerHTML = V.map(v=>`<span><i style="background:${v.col}"></i>${v.label}</span>`).join('');
+}
+
+/* ================= phase portrait ================= */
+let trajs=[];
+function phaseParams(){ return {eta:+$('eta').value, sig:+$('sig').value, tau:+$('tau').value, ap:1}; }
+function integrate(p0,s0,P,T=200000,dt=1e-3){
+  let p=p0,s=s0; const pts=[[p,s]];
+  for(let t=0;t<T;t++){
+    const d=P.tau-(1+P.sig)*p;
+    const dp=P.ap*s*d-P.eta*p, ds=2*p*s*d-2*P.eta*s;
+    p+=dt*dp; s=Math.max(s+dt*ds,0);
+    if(!isFinite(p)||Math.abs(p)>1e4) break;
+    if(t%400===0) pts.push([p,s]);
+    if(s<1e-12&&Math.abs(p)<1e-9) break;
+  }
+  pts.push([p,s]);
+  return {pts, collapsed: s<1e-6};
+}
+function drawPhase(){
+  const P=phaseParams(), cv=$('phase'), x=cv.getContext('2d');
+  const W=cv.width,Hh=cv.height,L=56,R=14,T=14,B=34, XMAX=1.0;
+  const tx=v=>L+(v/XMAX)*(W-L-R);
+  const ty=v=>{const f=(Math.log10(Math.max(v,1e-6))+6)/6.1; return Hh-B-Math.max(0,Math.min(1,f))*(Hh-T-B);};
+  x.clearRect(0,0,W,Hh);
+  const disc=P.tau*P.tau-4*P.eta*(1+P.sig);
+  const pm = disc>=0 ? (P.tau-Math.sqrt(disc))/(2*(1+P.sig)) : NaN;
+  const pp = disc>=0 ? (P.tau+Math.sqrt(disc))/(2*(1+P.sig)) : NaN;
+  const ec = P.tau*P.tau/(4*(1+P.sig));
+  $('vEta').textContent=P.eta.toFixed(3); $('vSig').textContent=P.sig.toFixed(2);
+  $('vTau').textContent=P.tau.toFixed(2);
+  $('fpm').textContent=isFinite(pm)?pm.toFixed(5):'—';
+  $('fpp').textContent=isFinite(pp)?pp.toFixed(5):'—';
+  $('ec').textContent=ec.toFixed(5);
+  $('reg').innerHTML = disc<0
+    ? '<span class="verdict v-bad">η &gt; η_crit: collapse unavoidable</span>'
+    : (P.eta===0 ? '<span class="verdict v-ok">η = 0: collapsed branch is a saddle</span>'
+                 : '<span class="verdict v-warn">three fixed points</span>');
+  // basin shading
+  if(isFinite(pm)&&pm>0){ x.fillStyle='#fbedeb'; x.fillRect(L,T,tx(pm)-L,Hh-B-T); }
+  if(disc<0){ x.fillStyle='#fbedeb'; x.fillRect(L,T,W-L-R,Hh-B-T); }
+  // grid
+  x.strokeStyle='#eeeeec';
+  [1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1].forEach(t=>{const y=ty(t);
+    x.beginPath(); x.moveTo(L,y); x.lineTo(W-R,y); x.stroke();
+    x.fillStyle='#6b7280'; x.font='10px ui-monospace,monospace';
+    x.fillText(t.toExponential(0),4,y+3);});
+  [0,.2,.4,.6,.8,1].forEach(t=>{const px=tx(t);
+    x.beginPath(); x.strokeStyle='#eeeeec'; x.moveTo(px,T); x.lineTo(px,Hh-B); x.stroke();
+    x.fillStyle='#6b7280'; x.fillText(t.toFixed(1),px-8,Hh-18);});
+  // parabola
+  x.strokeStyle='#1a1a1a'; x.setLineDash([4,3]); x.lineWidth=1.2; x.beginPath();
+  for(let i=0;i<=300;i++){ const p=i/300*XMAX, s=p*p/P.ap;
+    const px=tx(p),py=ty(s); i?x.lineTo(px,py):x.moveTo(px,py);} x.stroke(); x.setLineDash([]);
+  // fixed points
+  if(isFinite(pm)){ x.strokeStyle='#b03a2e'; x.setLineDash([2,2]);
+    x.beginPath(); x.moveTo(tx(pm),T); x.lineTo(tx(pm),Hh-B); x.stroke(); x.setLineDash([]);
+    x.fillStyle='#b03a2e'; x.font='11px ui-monospace,monospace';
+    x.fillText('p*₋='+pm.toFixed(4), tx(pm)+4, T+12); }
+  if(isFinite(pp)){ x.strokeStyle='#1e7a4c'; x.setLineDash([2,2]);
+    x.beginPath(); x.moveTo(tx(pp),T); x.lineTo(tx(pp),Hh-B); x.stroke(); x.setLineDash([]);
+    x.fillStyle='#1e7a4c'; x.fillText('p*₊='+pp.toFixed(4), Math.min(W-R-72,tx(pp)+4), T+12); }
+  // trajectories
+  trajs.forEach(t=>{
+    x.strokeStyle=t.collapsed?'#b03a2e':'#1e7a4c'; x.lineWidth=1.5; x.beginPath();
+    t.pts.forEach(([p,s],i)=>{const px=tx(p),py=ty(s); i?x.lineTo(px,py):x.moveTo(px,py);});
+    x.stroke();
+    x.fillStyle=t.collapsed?'#b03a2e':'#1e7a4c';
+    x.beginPath(); x.arc(tx(t.pts[0][0]),ty(t.pts[0][1]),3,0,7); x.fill();
+  });
+  x.fillStyle='#1a1a1a'; x.font='11px -apple-system,sans-serif';
+  x.fillText('predictor eigenvalue p', W/2-52, Hh-4);
+  x.save(); x.translate(12,Hh/2); x.rotate(-Math.PI/2);
+  x.fillText('online feature eigenvalue s',-70,0); x.restore();
+}
+$('phase').onclick = e => {
+  const r=e.target.getBoundingClientRect(), cv=$('phase');
+  const px=(e.clientX-r.left)*(cv.width/r.width), py=(e.clientY-r.top)*(cv.height/r.height);
+  const L=56,R=14,T=14,B=34,W=cv.width,Hh=cv.height,XMAX=1.0;
+  const p=Math.max(1e-4,((px-L)/(W-L-R))*XMAX);
+  const f=(Hh-B-py)/(Hh-T-B); const s=Math.pow(10,f*6.1-6);
+  if(trajs.length>14) trajs.shift();
+  trajs.push(integrate(p,s,phaseParams()));
+  drawPhase();
+};
+$('clearTraj').onclick=()=>{trajs=[];drawPhase();};
+$('sweep').onclick=()=>{ trajs=[]; const P=phaseParams();
+  for(let i=1;i<=8;i++) for(let j=1;j<=5;j++)
+    trajs.push(integrate(i/8*0.9, Math.pow(10,-6+j*1.1), P));
+  drawPhase(); };
+['eta','sig','tau'].forEach(id=>$(id).oninput=()=>{trajs=[];drawPhase();});
+
+/* ================= wiring ================= */
+$('go').onclick=()=>{ running=!running; $('go').textContent=running?'Pause':'Train';
+  $('go').className=running?'':'primary'; if(running) loop(); };
+$('reset').onclick=()=>{ running=false; $('go').textContent='Train'; $('go').className='primary'; reset(); };
+$('fast').onclick=()=>{ speed = speed===1?4:(speed===4?12:1); $('fast').textContent=speed+'× speed'; };
+$('LR').oninput=()=>$('vLR').textContent=Math.pow(10,+$('LR').value).toExponential(1);
+$('EM').oninput=()=>$('vEM').textContent=(+$('EM').value).toFixed(3);
+$('M').oninput=()=>$('vM').textContent=$('M').value;
+$('LN').oninput=()=>$('vLN').textContent=+$('LN').value===1?'on':'off';
+reset(); drawPhase();
+</script>
+</body></html>
